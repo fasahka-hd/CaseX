@@ -1,9 +1,7 @@
 /* Final UI fixes */
 
-/* Keep SPA interactions visually stable: cards and dialogs do not flash while state is re-rendered. */
 #app { contain: layout style; }
 
-/* Skin images: use the real asset as large as possible and keep a fallback visible. */
 .skin-card .art img,
 .skin-item .art img,
 .pick-card .art img,
@@ -19,7 +17,6 @@
 }
 .art { background: #242625; }
 
-/* Upgrade: selected weapon should fill the preview instead of sitting tiny in the box. */
 .selected-big {
   min-height: 220px;
   display: flex;
@@ -54,21 +51,19 @@
 .selected-big-price b { color:#fff; font-size:15px; }
 .selected-big-price em { color:#9ca5a1; font-size:9px; font-style:normal; }
 
-/* Profile: the best drop is on the right side, with the same summary height. */
+/* Restore original profile summary layout. */
 .profile-summary-grid {
-  grid-template-columns: minmax(0,1fr) minmax(280px,.78fr) minmax(180px,.48fr) !important;
-  grid-template-areas: 'user best side' !important;
+  grid-template-columns: initial !important;
+  grid-template-areas: initial !important;
 }
-.profile-summary-grid > .profile-user-card { grid-area:user; }
-.profile-summary-grid > .profile-best-card { grid-area:best; }
-.profile-summary-grid > .profile-side-column { grid-area:side; }
+.profile-summary-grid > .profile-user-card,
+.profile-summary-grid > .profile-best-card,
+.profile-summary-grid > .profile-side-column {
+  grid-area: auto !important;
+}
 
 @media (max-width: 900px) {
   .selected-big-art { flex-basis: 210px; width:210px; height:165px; }
-  .profile-summary-grid {
-    grid-template-columns: 1fr !important;
-    grid-template-areas: 'user' 'best' 'side' !important;
-  }
 }
 @media (max-width: 520px) {
   .selected-big { display:block; }
