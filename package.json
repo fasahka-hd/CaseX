@@ -1,11 +1,13 @@
 {
-  "name": "ggdrop-exact",
-  "version": "1.0.0",
+  "name": "keyser-upgrade",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Real Steam-backed CS2 upgrade site: Steam OpenID, live inventory, persistent balance and live drops.",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js", "dev": "node server.js" },
+  "engines": { "node": ">=18" },
   "dependencies": {
-    "express": "^4.18.2"
+    "better-sqlite3": "^11.10.0",
+    "express": "^5.1.0"
   }
 }
