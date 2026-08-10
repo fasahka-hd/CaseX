@@ -1,49 +1,568 @@
 'use strict';
-const express=require('express');
-const Database=require('better-sqlite3');
-const crypto=require('crypto');
-const path=require('path');
-const app=express();
-const PORT=Number(process.env.PORT||3000);
-const BASE_URL=(process.env.BASE_URL||`http://localhost:${PORT}`).replace(/\/$/,'');
-const SESSION_SECRET=process.env.SESSION_SECRET||crypto.randomBytes(32).toString('hex');
-const BRAND_NAME=process.env.BRAND_NAME||'КЕЙСЕР';
-const TELEGRAM_URL=process.env.TELEGRAM_URL||'https://t.me/';
-const STEAM_API_KEY=process.env.STEAM_API_KEY||'';
-app.use(express.json({limit:'128kb'}));
-app.use(express.urlencoded({extended:false}));
-app.get('/favicon.ico',(_,res)=>{res.type('svg').sendFile(path.join(__dirname,'favicon.svg'))});
-app.use(express.static(__dirname,{index:'index.html'}));
-const db=new Database(path.join(__dirname,'data.sqlite'));
-db.pragma('journal_mode=WAL');
-db.exec(`CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,steamid TEXT UNIQUE NOT NULL,name TEXT NOT NULL,avatar TEXT NOT NULL DEFAULT '',balance_cents INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS live_drops(id INTEGER PRIMARY KEY AUTOINCREMENT,user_name TEXT NOT NULL,item_name TEXT NOT NULL,item_icon TEXT NOT NULL DEFAULT '',price_cents INTEGER,created_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS support_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,message TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);CREATE INDEX IF NOT EXISTS idx_drops_created ON live_drops(created_at DESC);`);
-const clients=new Set();
-const marketCache=new Map();
-function clean(){db.prepare('DELETE FROM sessions WHERE expires_at<?').run(Date.now())};setInterval(clean,600000).unref();
-function sign(v){return crypto.createHmac('sha256',SESSION_SECRET).update(v).digest('hex')}
-function session(userId){const raw=`${crypto.randomBytes(24).toString('hex')}.${Date.now()}`;const token=`${raw}.${sign(raw)}`;db.prepare('INSERT INTO sessions(id,user_id,expires_at) VALUES(?,?,?)').run(token,userId,Date.now()+2592000000);return token}
-function cookies(h=''){const o={};for(const p of h.split(';')){const i=p.indexOf('=');if(i>0)o[p.slice(0,i).trim()]=decodeURIComponent(p.slice(i+1).trim())}return o}
-function user(req){const t=cookies(req.headers.cookie||'').session;if(!t)return null;return db.prepare('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires_at>?').get(t,Date.now())||null}
-function setCookie(res,t){res.setHeader('Set-Cookie',`session=${encodeURIComponent(t)}; Path=/; HttpOnly; SameSite=Lax; Secure=${BASE_URL.startsWith('https://')}; Max-Age=2592000`)}
-function clearCookie(res,t){if(t)db.prepare('DELETE FROM sessions WHERE id=?').run(t);res.setHeader('Set-Cookie','session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')}
-function broadcast(type,payload){const d=`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;for(const r of clients){try{r.write(d)}catch{clients.delete(r)}}}
-function steamLogin(){const p=new URLSearchParams({'openid.ns':'http://specs.openid.net/auth/2.0','openid.mode':'checkid_setup','openid.return_to':`${BASE_URL}/auth/steam/callback`,'openid.realm':BASE_URL,'openid.ns.sreg':'http://openid.net/extensions/sreg/1.1','openid.claimed_id':'http://specs.openid.net/auth/2.0/identifier_select','openid.identity':'http://specs.openid.net/auth/2.0/identifier_select'});return `https://steamcommunity.com/openid/login?${p}`}
-async function verifySteam(req){const p=new URLSearchParams();for(const [k,v] of Object.entries(req.query))p.set(k,String(v));p.set('openid.mode','check_authentication');const r=await fetch('https://steamcommunity.com/openid/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});const text=await r.text();if(!r.ok||!/is_valid\s*:\s*true/i.test(text))throw new Error('Steam OpenID verification failed');const m=String(req.query.openid_claimed_id||req.query['openid.claimed_id']||'').match(/\/id\/(\d{17})$/);if(!m)throw new Error('SteamID not found');return m[1]}
-async function steamProfile(id){if(!STEAM_API_KEY)return {name:`Steam ${id.slice(-6)}`,avatar:''};try{const u=new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');u.searchParams.set('key',STEAM_API_KEY);u.searchParams.set('steamids',id);const r=await fetch(u);if(!r.ok)return {name:`Steam ${id.slice(-6)}`,avatar:''};const p=(await r.json())?.response?.players?.[0];return {name:p?.personaname||`Steam ${id.slice(-6)}`,avatar:p?.avatarfull||''}}catch{return {name:`Steam ${id.slice(-6)}`,avatar:''}}}
-async function marketPrice(name){if(!name)return null;const key=String(name);const hit=marketCache.get(key);if(hit&&hit.expires>Date.now())return hit.value;try{const u=new URL('https://steamcommunity.com/market/priceoverview/');u.searchParams.set('country','ru');u.searchParams.set('currency','5');u.searchParams.set('appid','730');u.searchParams.set('market_hash_name',key);u.searchParams.set('format','json');const r=await fetch(u,{headers:{'User-Agent':'Mozilla/5.0'}});if(!r.ok)throw new Error('market');const j=await r.json();const raw=j?.lowest_price||j?.median_price||'';const n=Number(String(raw).replace(/[^0-9,\.]/g,'').replace(',','.'));const value=Number.isFinite(n)&&n>0?Math.round(n*100):null;marketCache.set(key,{value,expires:Date.now()+120000});return value}catch{marketCache.set(key,{value:null,expires:Date.now()+30000});return null}}
-async function inventory(id){const u=new URL(`https://steamcommunity.com/inventory/${id}/730/2`);u.searchParams.set('l','english');u.searchParams.set('count','2500');const r=await fetch(u,{headers:{'User-Agent':'Mozilla/5.0 (compatible; Keyser/2.0)'}});if(!r.ok)throw new Error(`Steam inventory HTTP ${r.status}`);const j=await r.json();if(j.success!==1)throw new Error('Steam inventory unavailable');const d=new Map((j.descriptions||[]).map(x=>[`${x.classid}_${x.instanceid}`,x]));const raw=(j.assets||[]).map(a=>{const x=d.get(`${a.classid}_${a.instanceid}`);if(!x)return null;const icon=x.icon_url_large||x.icon_url;return {assetid:a.assetid,classid:a.classid,instanceid:a.instanceid,name:x.market_hash_name||x.name,marketName:x.market_hash_name||x.name,icon:icon?`https://community.cloudflare.steamstatic.com/economy/image/${icon}/256fx256f`:'',tradable:!!x.tradable,marketable:!!x.marketable,type:x.type||''}}).filter(Boolean);const limited=raw.slice(0,60);for(let i=0;i<limited.length;i+=5)await Promise.all(limited.slice(i,i+5).map(async x=>{x.priceCents=await marketPrice(x.marketName)}));return raw}
-app.get('/auth/steam',(_,res)=>res.redirect(steamLogin()));
-app.get('/auth/steam/callback',async(req,res)=>{try{const steamid=await verifySteam(req);const p=await steamProfile(steamid);const t=Date.now();const old=db.prepare('SELECT * FROM users WHERE steamid=?').get(steamid);let id;if(old){db.prepare('UPDATE users SET name=?,avatar=?,updated_at=? WHERE id=?').run(p.name,p.avatar,t,old.id);id=old.id}else{id=db.prepare('INSERT INTO users(steamid,name,avatar,created_at,updated_at) VALUES(?,?,?,?,?)').run(steamid,p.name,p.avatar,t,t).lastInsertRowid}setCookie(res,session(id));res.redirect('/')}catch(e){console.error(e);res.status(502).send('Не удалось подтвердить вход через Steam. Вернитесь на сайт и попробуйте ещё раз.')}});
-app.post('/auth/logout',(req,res)=>{clearCookie(res,cookies(req.headers.cookie||'').session);res.json({ok:true})});
-app.get('/api/config',(_,res)=>res.json({brand:BRAND_NAME,telegram:TELEGRAM_URL}));
-app.get('/api/me',(req,res)=>{const u=user(req);if(!u)return res.json({authenticated:false});res.json({authenticated:true,user:{id:u.id,steamid:u.steamid,name:u.name,avatar:u.avatar,balanceCents:u.balance_cents}})});
-app.get('/api/inventory',async(req,res)=>{const u=user(req);if(!u)return res.status(401).json({authenticated:false});try{res.json({authenticated:true,items:await inventory(u.steamid)})}catch(e){console.error(e);res.status(502).json({error:'Steam не вернул инвентарь. Проверьте, что инвентарь профиля открыт.'})}});
-app.get('/api/live-drops',(_,res)=>res.json(db.prepare('SELECT id,user_name as userName,item_name as itemName,item_icon as itemIcon,price_cents as priceCents,created_at as createdAt FROM live_drops ORDER BY created_at DESC LIMIT 30').all()));
-app.get('/api/events',(req,res)=>{res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.flushHeaders?.();clients.add(res);res.write(`event: ready\ndata: ${JSON.stringify({online:clients.size})}\n\n`);req.on('close',()=>clients.delete(res))});
-app.get('/api/online',(_,res)=>res.json({online:clients.size}));
-app.get('/api/support/messages',(req,res)=>{const u=user(req);if(!u)return res.status(401).json({error:'login_required'});res.json(db.prepare('SELECT id,message,created_at as createdAt FROM support_messages WHERE user_id=? ORDER BY id DESC LIMIT 50').all(u.id).reverse())});
-app.post('/api/support/messages',(req,res)=>{const u=user(req);if(!u)return res.status(401).json({error:'login_required'});const m=String(req.body?.message||'').trim();if(!m||m.length>2000)return res.status(400).json({error:'invalid_message'});const r=db.prepare('INSERT INTO support_messages(user_id,message,created_at) VALUES(?,?,?)').run(u.id,m,Date.now());res.json({id:r.lastInsertRowid,message:m,createdAt:Date.now()})});
-app.post('/api/upgrade/preview',(req,res)=>{const u=user(req);if(!u)return res.status(401).json({error:'login_required'});const {fromAssetId,toAssetId}=req.body||{};if(!fromAssetId||!toAssetId)return res.status(400).json({error:'Выберите оба предмета'});res.json({ok:true,message:'Колесо проверено сервером. Перед запуском реальной передачи предметов подключите trading backend; клиент не объявляет победу сам.'})});
-// Live drops are intentionally not writable from the browser. They must be produced by the trusted game/trade backend.
-app.get('/api/cases',(req,res)=>{if(!user(req))return res.json({authenticated:false,cases:[]});res.json({authenticated:true,cases:[]})});
-app.listen(PORT,()=>console.log(`${BRAND_NAME}: ${BASE_URL}`));
+
+const express = require('express');
+const Database = require('better-sqlite3');
+const crypto = require('crypto');
+const path = require('path');
+
+const app = express();
+app.set('trust proxy', 1);
+const PORT = Number(process.env.PORT || 3000);
+const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const BRAND_NAME = process.env.BRAND_NAME || 'КЕЙСЕР';
+const TELEGRAM_URL = process.env.TELEGRAM_URL || 'https://t.me/';
+const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
+
+const RARITIES = {
+  consumer:   { name: 'Ширпотреб',       color: '#b0c3d9', rank: 0 },
+  industrial: { name: 'Промышленное',    color: '#5e98d9', rank: 1 },
+  milspec:    { name: 'Армейское',        color: '#4b69ff', rank: 2 },
+  restricted: { name: 'Запрещённое',     color: '#8847ff', rank: 3 },
+  classified: { name: 'Засекреченное',   color: '#d32ce6', rank: 4 },
+  covert:     { name: 'Тайное',           color: '#eb4b4b', rank: 5 },
+  contraband: { name: 'Контрабандное',    color: '#e4ae39', rank: 6 }
+};
+
+function catalogItem(id, name, image, priceCents, rarity) {
+  const [weapon, skin = ''] = name.split(' | ');
+  return {
+    catalogId: id,
+    id,
+    name,
+    weapon,
+    skin,
+    marketName: skin,
+    icon: `/static/items/${image}.png`,
+    priceCents,
+    rarity: RARITIES[rarity].name,
+    rarityKey: rarity,
+    rarityColor: RARITIES[rarity].color,
+    rarityRank: RARITIES[rarity].rank
+  };
+}
+
+// Internal site catalog. Prices are part of the site's economy and are saved with every won item.
+const CATALOG = [
+  catalogItem('p250-sand-dune', 'P250 | Sand Dune', 'p250-sand-dune', 3500, 'consumer'),
+  catalogItem('awp-safari-mesh', 'AWP | Safari Mesh', 'awp-safari-mesh', 8900, 'industrial'),
+  catalogItem('mp7-cirrus', 'MP7 | Cirrus', 'mp7-cirrus', 14600, 'milspec'),
+  catalogItem('ak47-elite-build', 'AK-47 | Elite Build', 'ak47-elite-build', 22500, 'milspec'),
+  catalogItem('awp-worm-god', 'AWP | Worm God', 'awp-worm-god', 38900, 'restricted'),
+  catalogItem('ak47-slate', 'AK-47 | Slate', 'ak47-slate', 64900, 'restricted'),
+  catalogItem('usp-cortex', 'USP-S | Cortex', 'usp-cortex', 125000, 'classified'),
+  catalogItem('glock-vogue', 'Glock-18 | Vogue', 'glock-vogue', 185000, 'classified'),
+  catalogItem('mac10-disco-tech', 'MAC-10 | Disco Tech', 'mac10-disco-tech', 230000, 'classified'),
+  catalogItem('m4a1-hyper-beast', 'M4A1-S | Hyper Beast', 'm4a1-hyper-beast', 420000, 'covert'),
+  catalogItem('ak47-neon-rider', 'AK-47 | Neon Rider', 'ak47-neon-rider', 650000, 'covert'),
+  catalogItem('awp-asiimov', 'AWP | Asiimov', 'awp-asiimov', 980000, 'covert'),
+  catalogItem('deagle-printstream', 'Desert Eagle | Printstream', 'deagle-printstream', 1350000, 'covert'),
+  catalogItem('ak47-wild-lotus', 'AK-47 | Wild Lotus', 'ak47-wild-lotus', 9500000, 'covert'),
+  catalogItem('m4a4-howl', 'M4A4 | Howl', 'm4a4-howl', 35000000, 'contraband')
+];
+const CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
+
+const CASES = [
+  {
+    id: 'starter', name: 'СТАРТОВЫЙ КЕЙС', priceCents: 0, once: true,
+    description: 'Один бесплатный кейс для нового игрока',
+    contents: [
+      ['p250-sand-dune', 46], ['awp-safari-mesh', 28], ['mp7-cirrus', 16],
+      ['ak47-elite-build', 7], ['awp-worm-god', 2.5], ['usp-cortex', 0.5]
+    ]
+  },
+  {
+    id: 'neon', name: 'NEON CASE', priceCents: 24900,
+    description: 'Яркие скины разных редкостей',
+    contents: [
+      ['mp7-cirrus', 36], ['ak47-elite-build', 27], ['awp-worm-god', 19],
+      ['ak47-slate', 11], ['usp-cortex', 5], ['glock-vogue', 1.6], ['m4a1-hyper-beast', 0.4]
+    ]
+  },
+  {
+    id: 'classified', name: 'CLASSIFIED', priceCents: 99900,
+    description: 'Повышенный шанс на розовую редкость',
+    contents: [
+      ['awp-worm-god', 34], ['ak47-slate', 27], ['usp-cortex', 16],
+      ['glock-vogue', 11], ['mac10-disco-tech', 8], ['m4a1-hyper-beast', 3], ['ak47-neon-rider', 1]
+    ]
+  },
+  {
+    id: 'legend', name: 'LEGEND', priceCents: 299900,
+    description: 'Редкие красные и контрабандные предметы',
+    contents: [
+      ['usp-cortex', 30], ['glock-vogue', 24], ['mac10-disco-tech', 18],
+      ['m4a1-hyper-beast', 12], ['ak47-neon-rider', 8], ['awp-asiimov', 5],
+      ['deagle-printstream', 2], ['ak47-wild-lotus', 0.8], ['m4a4-howl', 0.2]
+    ]
+  }
+];
+const CASES_BY_ID = new Map(CASES.map(item => [item.id, item]));
+
+app.use(express.json({ limit: '128kb' }));
+app.use(express.urlencoded({ extended: false }));
+app.get('/favicon.ico', (_, res) => res.type('svg').sendFile(path.join(__dirname, 'favicon.svg')));
+app.use(express.static(__dirname, { index: 'index.html' }));
+
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    steamid TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    avatar TEXT NOT NULL DEFAULT '',
+    balance_cents INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions(
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS live_drops(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    item_icon TEXT NOT NULL DEFAULT '',
+    price_cents INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS support_messages(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    message TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS site_inventory(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    catalog_id TEXT NOT NULL,
+    item_name TEXT NOT NULL,
+    weapon_name TEXT NOT NULL,
+    skin_name TEXT NOT NULL,
+    item_icon TEXT NOT NULL,
+    price_cents INTEGER NOT NULL,
+    rarity TEXT NOT NULL,
+    rarity_color TEXT NOT NULL,
+    rarity_rank INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+  CREATE TABLE IF NOT EXISTS case_openings(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    case_id TEXT NOT NULL,
+    inventory_item_id INTEGER NOT NULL,
+    cost_cents INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS upgrade_rounds(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    from_item_id INTEGER NOT NULL,
+    target_catalog_id TEXT NOT NULL,
+    chance REAL NOT NULL,
+    won INTEGER NOT NULL,
+    result_item_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS inventory_sales(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    inventory_item_id INTEGER NOT NULL UNIQUE,
+    amount_cents INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_drops_created ON live_drops(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_site_inventory_user ON site_inventory(user_id, status, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_case_openings_user ON case_openings(user_id, case_id);
+`);
+
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('live_drops', 'rarity', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('live_drops', 'rarity_color', "TEXT NOT NULL DEFAULT '#74ffca'");
+ensureColumn('live_drops', 'rarity_rank', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('live_drops', 'source', "TEXT NOT NULL DEFAULT 'case'");
+
+const clients = new Set();
+function cleanSessions() { db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()); }
+setInterval(cleanSessions, 600000).unref();
+
+function sign(value) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
+}
+function createSession(userId) {
+  const raw = `${crypto.randomBytes(24).toString('hex')}.${Date.now()}`;
+  const token = `${raw}.${sign(raw)}`;
+  db.prepare('INSERT INTO sessions(id,user_id,expires_at) VALUES(?,?,?)')
+    .run(token, userId, Date.now() + 2592000000);
+  return token;
+}
+function cookies(header = '') {
+  const out = {};
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index > 0) out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return out;
+}
+function currentUser(req) {
+  const token = cookies(req.headers.cookie || '').session;
+  if (!token) return null;
+  return db.prepare(`
+    SELECT u.* FROM sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.id = ? AND s.expires_at > ?
+  `).get(token, Date.now()) || null;
+}
+function setCookie(res, token) {
+  res.setHeader('Set-Cookie', `session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Secure=${BASE_URL.startsWith('https://')}; Max-Age=2592000`);
+}
+function clearCookie(res, token) {
+  if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(token);
+  res.setHeader('Set-Cookie', 'session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+}
+function broadcast(type, payload) {
+  const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const response of clients) {
+    try { response.write(data); } catch { clients.delete(response); }
+  }
+}
+function requestBase(req) {
+  if (process.env.BASE_URL) return BASE_URL;
+  return `${req.protocol}://${req.get('host')}`.replace(/\/$/, '');
+}
+function steamLogin(req) {
+  const base = requestBase(req);
+  const params = new URLSearchParams({
+    'openid.ns': 'http://specs.openid.net/auth/2.0',
+    'openid.mode': 'checkid_setup',
+    'openid.return_to': `${base}/auth/steam/callback`,
+    'openid.realm': base,
+    'openid.ns.sreg': 'http://openid.net/extensions/sreg/1.1',
+    'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+    'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select'
+  });
+  return `https://steamcommunity.com/openid/login?${params}`;
+}
+async function verifySteam(req) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query)) params.set(key, String(value));
+  params.set('openid.mode', 'check_authentication');
+  const response = await fetch('https://steamcommunity.com/openid/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString()
+  });
+  const text = await response.text();
+  if (!response.ok || !/is_valid\s*:\s*true/i.test(text)) throw new Error('Steam OpenID verification failed');
+  const match = String(req.query.openid_claimed_id || req.query['openid.claimed_id'] || '').match(/\/id\/(\d{17})$/);
+  if (!match) throw new Error('SteamID not found');
+  return match[1];
+}
+async function steamProfile(id) {
+  if (!STEAM_API_KEY) return { name: `Steam ${id.slice(-6)}`, avatar: '' };
+  try {
+    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');
+    url.searchParams.set('key', STEAM_API_KEY);
+    url.searchParams.set('steamids', id);
+    const response = await fetch(url);
+    const profile = response.ok ? (await response.json())?.response?.players?.[0] : null;
+    return { name: profile?.personaname || `Steam ${id.slice(-6)}`, avatar: profile?.avatarfull || '' };
+  } catch {
+    return { name: `Steam ${id.slice(-6)}`, avatar: '' };
+  }
+}
+function publicCatalogItem(item) {
+  return { ...item };
+}
+function inventoryRows(userId) {
+  return db.prepare(`
+    SELECT id AS assetid, catalog_id AS catalogId, item_name AS name,
+      weapon_name AS weapon, skin_name AS skin, skin_name AS marketName,
+      item_icon AS icon, price_cents AS priceCents, rarity,
+      rarity_color AS rarityColor, rarity_rank AS rarityRank,
+      source, created_at AS createdAt
+    FROM site_inventory
+    WHERE user_id = ? AND status = 'active'
+    ORDER BY id DESC
+  `).all(userId).map(row => ({ ...row, assetid: String(row.assetid) }));
+}
+function insertInventoryItem(userId, catalog, source, now = Date.now()) {
+  const result = db.prepare(`
+    INSERT INTO site_inventory(
+      user_id,catalog_id,item_name,weapon_name,skin_name,item_icon,price_cents,
+      rarity,rarity_color,rarity_rank,source,status,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',?,?)
+  `).run(
+    userId, catalog.catalogId, catalog.name, catalog.weapon, catalog.skin, catalog.icon,
+    catalog.priceCents, catalog.rarity, catalog.rarityColor, catalog.rarityRank, source, now, now
+  );
+  return Number(result.lastInsertRowid);
+}
+function pickWeighted(contents) {
+  const total = contents.reduce((sum, [, weight]) => sum + weight, 0);
+  let point = crypto.randomInt(0, 1000000) / 1000000 * total;
+  for (const [id, weight] of contents) {
+    point -= weight;
+    if (point < 0) return CATALOG_BY_ID.get(id);
+  }
+  return CATALOG_BY_ID.get(contents[contents.length - 1][0]);
+}
+function dropPayload(row) {
+  return {
+    id: row.id,
+    userName: row.user_name,
+    itemName: row.item_name,
+    itemIcon: row.item_icon,
+    priceCents: row.price_cents,
+    rarity: row.rarity,
+    rarityColor: row.rarity_color,
+    rarityRank: row.rarity_rank,
+    source: row.source,
+    createdAt: row.created_at
+  };
+}
+function addLiveDrop(userName, item, source, now = Date.now()) {
+  const result = db.prepare(`
+    INSERT INTO live_drops(user_name,item_name,item_icon,price_cents,rarity,rarity_color,rarity_rank,source,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?)
+  `).run(userName, item.name, item.icon, item.priceCents, item.rarity, item.rarityColor, item.rarityRank, source, now);
+  return dropPayload(db.prepare('SELECT * FROM live_drops WHERE id = ?').get(result.lastInsertRowid));
+}
+function caseView(caseData, userId) {
+  const opened = userId && caseData.once
+    ? !!db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(userId, caseData.id)
+    : false;
+  return {
+    id: caseData.id,
+    name: caseData.name,
+    description: caseData.description,
+    priceCents: caseData.priceCents,
+    once: !!caseData.once,
+    available: !opened,
+    contents: caseData.contents.map(([id, weight]) => ({ ...publicCatalogItem(CATALOG_BY_ID.get(id)), weight }))
+  };
+}
+
+app.get('/auth/steam', (req, res) => res.redirect(steamLogin(req)));
+app.get('/auth/steam/callback', async (req, res) => {
+  try {
+    const steamid = await verifySteam(req);
+    const profile = await steamProfile(steamid);
+    const now = Date.now();
+    const old = db.prepare('SELECT * FROM users WHERE steamid = ?').get(steamid);
+    let userId;
+    if (old) {
+      db.prepare('UPDATE users SET name = ?, avatar = ?, updated_at = ? WHERE id = ?')
+        .run(profile.name, profile.avatar, now, old.id);
+      userId = old.id;
+    } else {
+      userId = Number(db.prepare('INSERT INTO users(steamid,name,avatar,created_at,updated_at) VALUES(?,?,?,?,?)')
+        .run(steamid, profile.name, profile.avatar, now, now).lastInsertRowid);
+    }
+    setCookie(res, createSession(userId));
+    res.redirect('/');
+  } catch (error) {
+    console.error(error);
+    res.status(502).send('Не удалось подтвердить вход через Steam. Вернитесь на сайт и попробуйте ещё раз.');
+  }
+});
+// Explicitly opt-in local preview login; never enabled in production by default.
+if (process.env.ALLOW_DEV_LOGIN === '1') {
+  app.get('/auth/dev', (req, res) => {
+    const now = Date.now();
+    const steamid = '76561190000000001';
+    let dev = db.prepare('SELECT * FROM users WHERE steamid = ?').get(steamid);
+    if (!dev) {
+      const id = Number(db.prepare('INSERT INTO users(steamid,name,avatar,balance_cents,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+        .run(steamid, 'Preview Player', '', 500000, now, now).lastInsertRowid);
+      dev = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    }
+    setCookie(res, createSession(dev.id));
+    res.redirect('/');
+  });
+}
+app.post('/auth/logout', (req, res) => {
+  clearCookie(res, cookies(req.headers.cookie || '').session);
+  res.json({ ok: true });
+});
+
+app.get('/api/config', (_, res) => res.json({ brand: BRAND_NAME, telegram: TELEGRAM_URL }));
+app.get('/api/me', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.json({ authenticated: false });
+  res.json({
+    authenticated: true,
+    user: {
+      id: account.id, steamid: account.steamid, name: account.name,
+      avatar: account.avatar, balanceCents: account.balance_cents
+    }
+  });
+});
+app.get('/api/catalog', (_, res) => res.json(CATALOG.map(publicCatalogItem)));
+app.get('/api/inventory', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ authenticated: false });
+  res.json({ authenticated: true, items: inventoryRows(account.id) });
+});
+app.post('/api/inventory/:id/sell', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const itemId = Number(req.params.id);
+  if (!Number.isSafeInteger(itemId)) return res.status(400).json({ error: 'Предмет не найден' });
+  try {
+    const result = db.transaction(() => {
+      const item = db.prepare("SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'")
+        .get(itemId, account.id);
+      if (!item) throw new Error('Предмет уже недоступен');
+      const now = Date.now();
+      const changed = db.prepare("UPDATE site_inventory SET status = 'sold', updated_at = ? WHERE id = ? AND status = 'active'")
+        .run(now, itemId);
+      if (!changed.changes) throw new Error('Предмет уже недоступен');
+      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?')
+        .run(item.price_cents, now, account.id);
+      db.prepare('INSERT INTO inventory_sales(user_id,inventory_item_id,amount_cents,created_at) VALUES(?,?,?,?)')
+        .run(account.id, itemId, item.price_cents, now);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      return { amountCents: item.price_cents, balanceCents: balance };
+    })();
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Не удалось продать предмет' });
+  }
+});
+app.get('/api/cases', (req, res) => {
+  const account = currentUser(req);
+  res.json({ authenticated: !!account, cases: CASES.map(item => caseView(item, account?.id)) });
+});
+app.post('/api/cases/open', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const caseData = CASES_BY_ID.get(String(req.body?.caseId || ''));
+  if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
+
+  try {
+    const result = db.transaction(() => {
+      if (caseData.once && db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(account.id, caseData.id)) {
+        throw new Error('Стартовый кейс уже был открыт');
+      }
+      if (caseData.priceCents > 0) {
+        const charged = db.prepare(`
+          UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
+          WHERE id = ? AND balance_cents >= ?
+        `).run(caseData.priceCents, Date.now(), account.id, caseData.priceCents);
+        if (!charged.changes) throw new Error('Недостаточно средств на балансе');
+      }
+      const won = pickWeighted(caseData.contents);
+      const now = Date.now();
+      const inventoryId = insertInventoryItem(account.id, won, `case:${caseData.id}`, now);
+      db.prepare('INSERT INTO case_openings(user_id,case_id,inventory_item_id,cost_cents,created_at) VALUES(?,?,?,?,?)')
+        .run(account.id, caseData.id, inventoryId, caseData.priceCents, now);
+      const drop = addLiveDrop(account.name, won, 'case', now);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      return { won: { ...won, assetid: String(inventoryId) }, drop, balanceCents: balance };
+    })();
+    broadcast('drop', result.drop);
+    res.json({ ok: true, item: result.won, balanceCents: result.balanceCents });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Не удалось открыть кейс' });
+  }
+});
+
+app.post('/api/upgrade', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const fromId = Number(req.body?.fromAssetId);
+  const target = CATALOG_BY_ID.get(String(req.body?.toCatalogId || ''));
+  const boostPercent = Number(req.body?.boostPercent || 10);
+  const allowedBoosts = new Set([10, 30, 50, 75]);
+  if (!Number.isSafeInteger(fromId) || !target) return res.status(400).json({ error: 'Выберите оба предмета' });
+  if (!allowedBoosts.has(boostPercent)) return res.status(400).json({ error: 'Недопустимый процент апгрейда' });
+
+  try {
+    const result = db.transaction(() => {
+      const from = db.prepare(`
+        SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'
+      `).get(fromId, account.id);
+      if (!from) throw new Error('Исходный предмет уже недоступен');
+      const minimumTargetPrice = Math.ceil(from.price_cents * (1 + boostPercent / 100));
+      if (target.priceCents < minimumTargetPrice) throw new Error(`Цель для +${boostPercent}% должна стоить не менее ${minimumTargetPrice / 100} ₽`);
+      const chance = Math.min(95, Math.max(1, Math.floor(from.price_cents / target.priceCents * 10000) / 100));
+      const roll = crypto.randomInt(0, 1000000) / 10000;
+      const won = roll < chance;
+      const now = Date.now();
+      db.prepare("UPDATE site_inventory SET status = 'used', updated_at = ? WHERE id = ?").run(now, fromId);
+      let resultItemId = null;
+      let drop = null;
+      if (won) {
+        resultItemId = insertInventoryItem(account.id, target, `upgrade:${fromId}`, now);
+        drop = addLiveDrop(account.name, target, 'upgrade', now);
+      }
+      db.prepare(`
+        INSERT INTO upgrade_rounds(user_id,from_item_id,target_catalog_id,chance,won,result_item_id,created_at)
+        VALUES(?,?,?,?,?,?,?)
+      `).run(account.id, fromId, target.catalogId, chance, won ? 1 : 0, resultItemId, now);
+      return {
+        won,
+        chance,
+        boostPercent,
+        roll: Math.floor(roll * 100) / 100,
+        item: won ? { ...target, assetid: String(resultItemId) } : null,
+        drop
+      };
+    })();
+    if (result.drop) broadcast('drop', result.drop);
+    res.json({ ok: true, won: result.won, chance: result.chance, boostPercent: result.boostPercent, item: result.item });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Не удалось выполнить апгрейд' });
+  }
+});
+
+app.get('/api/live-drops', (_, res) => {
+  const rows = db.prepare('SELECT * FROM live_drops ORDER BY created_at DESC LIMIT 30').all();
+  res.json(rows.map(dropPayload));
+});
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  clients.add(res);
+  broadcast('online', { online: clients.size });
+  req.on('close', () => {
+    clients.delete(res);
+    broadcast('online', { online: clients.size });
+  });
+});
+app.get('/api/online', (_, res) => res.json({ online: clients.size }));
+
+app.get('/api/support/messages', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'login_required' });
+  res.json(db.prepare(`
+    SELECT id,message,created_at AS createdAt FROM support_messages
+    WHERE user_id = ? ORDER BY id DESC LIMIT 50
+  `).all(account.id).reverse());
+});
+app.post('/api/support/messages', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'login_required' });
+  const message = String(req.body?.message || '').trim();
+  if (!message || message.length > 2000) return res.status(400).json({ error: 'invalid_message' });
+  const now = Date.now();
+  const result = db.prepare('INSERT INTO support_messages(user_id,message,created_at) VALUES(?,?,?)')
+    .run(account.id, message, now);
+  res.json({ id: result.lastInsertRowid, message, createdAt: now });
+});
+
+app.listen(PORT, '0.0.0.0', () => console.log(`${BRAND_NAME}: ${BASE_URL}`));
