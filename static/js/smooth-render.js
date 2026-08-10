@@ -16,7 +16,7 @@
     }
   }
 
-  function morph(oldNode, newNode) {
+  function morph(oldNode, newNode, preserveRoot = false) {
     if (!sameNode(oldNode, newNode)) {
       oldNode.replaceWith(newNode.cloneNode(true));
       return;
@@ -26,7 +26,7 @@
       return;
     }
 
-    syncAttributes(oldNode, newNode);
+    if (!preserveRoot) syncAttributes(oldNode, newNode);
     const oldChildren = Array.from(oldNode.childNodes);
     const newChildren = Array.from(newNode.childNodes);
     const common = Math.min(oldChildren.length, newChildren.length);
@@ -34,6 +34,21 @@
     for (let i = 0; i < common; i++) morph(oldChildren[i], newChildren[i]);
     for (let i = common; i < newChildren.length; i++) oldNode.appendChild(newChildren[i].cloneNode(true));
     for (let i = oldChildren.length - 1; i >= newChildren.length; i--) oldNode.removeChild(oldNode.childNodes[i]);
+  }
+
+  function stabilizeImages(root) {
+    root.querySelectorAll('.art img').forEach(img => {
+      if (!img.complete) img.style.visibility = 'hidden';
+      const reveal = () => { img.style.visibility = 'visible'; };
+      img.addEventListener('load', reveal, { once: true });
+      img.addEventListener('error', () => {
+        if (!img.dataset.fallback) {
+          img.dataset.fallback = '1';
+          img.src = '/chunks/empty.webp';
+        }
+        reveal();
+      }, { once: true });
+    });
   }
 
   Object.defineProperty(proto, 'innerHTML', {
@@ -47,19 +62,8 @@
       }
       const template = document.createElement('div');
       template.innerHTML = value;
-      morph(this, template);
-      this.querySelectorAll('.art img').forEach(img => {
-        if (!img.complete) img.style.visibility = 'hidden';
-        const reveal = () => { img.style.visibility = 'visible'; };
-        img.addEventListener('load', reveal, { once: true });
-        img.addEventListener('error', () => {
-          if (!img.dataset.fallback) {
-            img.dataset.fallback = '1';
-            img.src = '/chunks/empty.webp';
-          }
-          reveal();
-        }, { once: true });
-      });
+      morph(this, template, true);
+      stabilizeImages(this);
     }
   });
 })();
