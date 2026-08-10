@@ -1,0 +1,77 @@
+/* Final UI fixes */
+
+/* Keep SPA interactions visually stable: cards and dialogs do not flash while state is re-rendered. */
+#app { contain: layout style; }
+
+/* Skin images: use the real asset as large as possible and keep a fallback visible. */
+.skin-card .art img,
+.skin-item .art img,
+.pick-card .art img,
+.selected-big-art img,
+.roulette-card .art img,
+.top-drop-card .art img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+.art { background: #242625; }
+
+/* Upgrade: selected weapon should fill the preview instead of sitting tiny in the box. */
+.selected-big {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  overflow: hidden;
+}
+.selected-big-art {
+  position: relative;
+  flex: 0 0 250px;
+  width: 250px;
+  height: 185px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgba(20,22,21,.35);
+  border-radius: 6px;
+}
+.selected-big-art img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  transform: scale(1.08);
+  filter: drop-shadow(0 12px 15px rgba(0,0,0,.55));
+}
+.selected-big-info { min-width: 0; flex: 1; }
+.selected-big-info strong { display:block; font-size:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.selected-big-info span { display:block; margin-top:6px; color:#aeb8b3; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.selected-big-info small { display:block; margin-top:8px; color:var(--rarity); font-size:9px; text-transform:uppercase; }
+.selected-big-price { margin-top:12px; display:flex; align-items:center; gap:8px; }
+.selected-big-price b { color:#fff; font-size:15px; }
+.selected-big-price em { color:#9ca5a1; font-size:9px; font-style:normal; }
+
+/* Profile: the best drop is on the right side, with the same summary height. */
+.profile-summary-grid {
+  grid-template-columns: minmax(0,1fr) minmax(280px,.78fr) minmax(180px,.48fr) !important;
+  grid-template-areas: 'user best side' !important;
+}
+.profile-summary-grid > .profile-user-card { grid-area:user; }
+.profile-summary-grid > .profile-best-card { grid-area:best; }
+.profile-summary-grid > .profile-side-column { grid-area:side; }
+
+@media (max-width: 900px) {
+  .selected-big-art { flex-basis: 210px; width:210px; height:165px; }
+  .profile-summary-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: 'user' 'best' 'side' !important;
+  }
+}
+@media (max-width: 520px) {
+  .selected-big { display:block; }
+  .selected-big-art { width:100%; height:190px; }
+  .selected-big-info { padding:10px 4px 2px; }
+}
