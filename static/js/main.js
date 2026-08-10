@@ -1,14 +1,33 @@
 const S = {
   page: 'upgrade', me: null, inventory: [], catalog: [], cases: [], drops: [], online: 0,
-  tab: 'inventory', from: null, to: null, chance: null, boost: 10, spinning: false,
+  tab: 'inventory', from: null, to: null, chance: null, boost: 30, addBalance: 0, turbo: false, spinning: false,
   opening: null, activeCase: null, rouletteItems: [], caseResult: null,
   authModal: false, ageAccepted: false, termsAccepted: false,
   profile: null, profileTab: 'items', settingsOpen: false, settings: null,
-  paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0,
-  targetSearch: '', targetMin: '', targetMax: '',
+  paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0, paymentCurrency: 'RUB', currencyOpen: false,
+  targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
+  footerLang: 'RU', footerLangOpen: false,
   globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
   chat: false, chatEmail: '', chatEmailReady: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/'
 };
+
+const CURRENCIES = [
+  { code: 'RUB', symbol: '₽', name: 'Российский рубль', flag: '🇷🇺' },
+  { code: 'USD', symbol: '$', name: 'Доллар США', flag: '🇺🇸' },
+  { code: 'EUR', symbol: '€', name: 'Евро', flag: '🇪🇺' },
+  { code: 'UAH', symbol: '₴', name: 'Гривна', flag: '🇺🇦' },
+  { code: 'KZT', symbol: '₸', name: 'Тенге', flag: '🇰🇿' },
+  { code: 'BYN', symbol: 'Br', name: 'Белорусский рубль', flag: '🇧🇾' }
+];
+const CURRENCY_BY_CODE = Object.fromEntries(CURRENCIES.map(item => [item.code, item]));
+
+const LANGS = [
+  { code: 'RU', name: 'Русский', flag: '🇷🇺' },
+  { code: 'EN', name: 'English', flag: '🇬🇧' },
+  { code: 'UA', name: 'Українська', flag: '🇺🇦' },
+  { code: 'KZ', name: 'Қазақша', flag: '🇰🇿' },
+  { code: 'BY', name: 'Беларуская', flag: '🇧🇾' }
+];
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, match => ({
@@ -26,6 +45,34 @@ const avatarImage = user => user?.avatar
   ? `<img src="${esc(user.avatar)}" alt="${esc(user.name || 'Профиль')}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
   : '<img src="/chunks/logo.svg" alt="Профиль">';
 const art = item => `<div class="art" ${rarityStyle(item)}>${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '')}</div>`;
+
+function coinIcon(size = '1.6rem', color = '#FFA800') {
+  return `<svg class="coin-icon" style="width:${size};height:${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" fill="none" stroke="${color}" stroke-width="1.6"/>
+    <circle cx="12" cy="12" r="6.4" fill="none" stroke="${color}" stroke-width="1.4" opacity=".55"/>
+    <path d="M12 7.8v8.4M9.6 9.6h3.2a1.7 1.7 0 0 1 0 3.4h-2.4a1.7 1.7 0 0 0 0 3.4h3.2" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+}
+function plusIcon(size = '2rem', color = '#FFA800') {
+  return `<svg class="plus-icon" style="width:${size};height:${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 5v14M5 12h14" stroke="${color}" stroke-width="2" stroke-linecap="round"/>
+  </svg>`;
+}
+function turboIcon(on) {
+  return `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15.4255 2.24994C16.2665 2.24994 16.8295 3.04794 16.6375 3.81294L16.5885 3.96594L14.4905 9.34994H17.0005C17.9855 9.34994 18.5325 10.4039 18.1005 11.2039L18.0005 11.3599L10.5305 21.4069C9.9905 22.1319 8.9095 21.6309 9.0035 20.8019L9.7885 13.8919H7.0005C6.0935 13.8919 5.5135 12.9679 5.8455 12.1569L5.8505 12.1459L9.7565 3.01794C9.85142 2.79082 10.0113 2.59678 10.216 2.46015C10.4208 2.32353 10.6613 2.2504 10.9075 2.24994H15.4255Z" fill="${on ? '#FFA800' : 'currentColor'}"/></svg>`;
+}
+function soundIcon(on) {
+  const color = on ? '#83D8FF' : 'currentColor';
+  const opacity = on ? 1 : .3;
+  return `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="opacity:${opacity}">
+    <path d="M13.5 4.05995C13.5 2.72395 11.884 2.05495 10.94 2.99995L6.44001 7.49995H4.50801C3.36701 7.49995 2.19001 8.16395 1.84801 9.40495C1.61598 10.2504 1.49893 11.1232 1.50001 12C1.50001 12.898 1.62101 13.768 1.85001 14.595C2.19101 15.835 3.36801 16.5 4.50901 16.5H6.43901L10.939 21C11.884 21.945 13.5 21.276 13.5 19.94V4.05995Z" fill="${color}"/>
+    <path d="M18.584 5.10595C18.7246 4.9655 18.9153 4.88661 19.114 4.88661C19.3128 4.88661 19.5034 4.9655 19.644 5.10595C23.452 8.91295 23.452 15.086 19.644 18.894C19.5018 19.0264 19.3138 19.0986 19.1195 19.0951C18.9252 19.0917 18.7398 19.013 18.6024 18.8756C18.465 18.7382 18.3863 18.5528 18.3828 18.3585C18.3794 18.1642 18.4515 17.9761 18.584 17.834C19.3502 17.0679 19.958 16.1583 20.3727 15.1573C20.7873 14.1563 21.0007 13.0834 21.0007 12C21.0007 10.9165 20.7873 9.84358 20.3727 8.84257C19.958 7.84157 19.3502 6.93205 18.584 6.16595C18.4436 6.02533 18.3647 5.8347 18.3647 5.63595C18.3647 5.4372 18.4436 5.24658 18.584 5.10595Z" fill="${color}"/>
+    <path d="M15.9322 7.75695C16.0019 7.68725 16.0846 7.63197 16.1756 7.59425C16.2666 7.55652 16.3642 7.53711 16.4627 7.53711C16.5612 7.53711 16.6588 7.55652 16.7498 7.59425C16.8409 7.63197 16.9236 7.68725 16.9932 7.75695C17.5505 8.31411 17.9925 8.97559 18.2941 9.70361C18.5957 10.4316 18.7509 11.2119 18.7509 11.9999C18.7509 12.788 18.5957 13.5683 18.2941 14.2963C17.9925 15.0243 17.5505 15.6858 16.9932 16.2429C16.8517 16.3795 16.6622 16.455 16.4656 16.4532C16.2689 16.4514 16.0808 16.3724 15.9418 16.2333C15.8029 16.0942 15.7241 15.9061 15.7224 15.7094C15.7208 15.5128 15.7965 15.3233 15.9332 15.1819C16.3511 14.7641 16.6825 14.268 16.9087 13.722C17.1348 13.1761 17.2512 12.5909 17.2512 11.9999C17.2512 11.409 17.1348 10.8238 16.9087 10.2779C16.6825 9.73189 16.3511 9.23581 15.9332 8.81795C15.7928 8.67732 15.7139 8.4867 15.7139 8.28795C15.7139 8.0892 15.7928 7.89857 15.9332 7.75795L15.9322 7.75695Z" fill="${color}"/>
+  </svg>`;
+}
+function chevronIcon() {
+  return `<svg class="chevron-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9.5 12 15.5 18 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -48,6 +95,7 @@ async function boot() {
     S.catalog = catalog;
     S.cases = cases.cases || [];
     S.globalStats = stats;
+    S.turbo = localStorage.getItem('keyser-turbo') === '1';
     if (me.authenticated) {
       const [inventory, profile] = await Promise.all([api('/api/inventory'), api('/api/profile')]);
       S.inventory = inventory.items || [];
@@ -58,7 +106,7 @@ async function boot() {
   } catch (error) {
     console.error(error);
     render();
-    toast('Не удалось загрузить данные');
+    toast('Не удалось загрузить данные', 'error');
   }
 }
 
@@ -73,6 +121,12 @@ function listen() {
     if (!S.drops.some(item => item.id === drop.id)) S.drops.unshift(drop);
     S.drops = S.drops.slice(0, 30);
     if (S.page === 'rewards' || S.page === 'upgrade') render();
+  });
+  document.addEventListener('click', event => {
+    let changed = false;
+    if (!event.target.closest('.footer-language') && S.footerLangOpen) { S.footerLangOpen = false; changed = true; }
+    if (!event.target.closest('.currency-select') && S.currencyOpen) { S.currencyOpen = false; changed = true; }
+    if (changed) render();
   });
 }
 
@@ -123,6 +177,7 @@ function sideItem(item) {
     ${art(item)}
     <div class="side-item-copy">
       <b class="side-price">${money(item.priceCents)}</b>
+      ${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}
       <div class="item-name">${esc(item.weapon || item.name)}</div>
       <div class="item-skin">${esc(item.skin || item.marketName)}</div>
       <div class="item-rarity">${esc(item.rarity)}</div>
@@ -166,7 +221,7 @@ function skinCard(item, options = {}) {
   const attrs = options.onclick ? ` onclick="${options.onclick}"` : '';
   const className = options.className || 'card';
   return `<${tag} class="${className} skin-card" ${rarityStyle(item)}${attrs}>
-    ${priceTag(item)}${art(item)}
+    ${priceTag(item)}${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}${art(item)}
     <strong>${esc(item.weapon || item.name)}</strong>
     <small>${esc(item.skin || item.marketName || '')}</small>
     <span class="rarity-name">${esc(item.rarity || '')}</span>${rarityLine()}
@@ -175,19 +230,21 @@ function skinCard(item, options = {}) {
 function pickCard(item, side) {
   const id = side === 'from' ? item.assetid : item.catalogId;
   return `<button class="pick-card skin-card" ${rarityStyle(item)} onclick="choose('${esc(id)}','${side}')">
-    ${priceTag(item)}${art(item)}
+    ${priceTag(item)}${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}${art(item)}
     <strong>${esc(item.weapon || item.name)}</strong>
     <small>${esc(item.skin || item.marketName || '')}</small>${rarityLine()}
   </button>`;
 }
-function selected(item) {
-  return item
-    ? `<div class="selected skin-item" ${rarityStyle(item)}>
-        ${art(item)}
-        <div class="selected-info"><strong>${esc(item.weapon || item.name)}</strong><span>${esc(item.skin || item.marketName || '')}</span><small>${esc(item.rarity || '')}</small><b>${money(item.priceCents)}</b></div>
-        ${rarityLine()}
-      </div>`
-    : '<div class="selected empty">Выбранный предмет появится здесь</div>';
+function bigSelected(item) {
+  return `<div class="selected-big skin-item" ${rarityStyle(item)}>
+    <div class="selected-big-art">${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '')}</div>
+    <div class="selected-big-info">
+      <strong>${esc(item.weapon || item.name)}</strong>
+      <span>${esc(item.skin || item.marketName || '')}</span>
+      <small>${esc(item.rarity || '')}</small>
+      <div class="selected-big-price"><b>${money(item.priceCents)}</b>${item.wear ? `<em>${esc(item.wear)}</em>` : ''}</div>
+    </div>
+  </div>`;
 }
 
 function loginRequired(title, text) {
@@ -199,41 +256,66 @@ function loginRequired(title, text) {
 function upgradePage() {
   if (!S.me?.authenticated) return loginRequired('АПГРЕЙДЫ', 'Войдите в аккаунт. Для апгрейда используются только предметы из инвентаря сайта.');
   const inventory = S.inventory;
-  const minimumPrice = S.from ? Math.ceil(S.from.priceCents * (1 + S.boost / 100)) : 0;
-  const baseTargets = S.from ? S.catalog.filter(item => item.priceCents >= minimumPrice) : [];
+  const baseValue = (S.from ? Number(S.from.priceCents) : 0) + S.addBalance;
+  const minimumPrice = S.from ? Math.ceil(baseValue * (1 + S.boost / 100)) : 0;
   const query = S.targetSearch.trim().toLowerCase();
   const minTarget = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
   const maxTarget = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
-  const targets = baseTargets.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
+  const targets = S.catalog.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
+  const pageSize = 12;
+  let pageCount = Math.max(1, Math.ceil(targets.length / pageSize));
+  if (S.targetPage > pageCount) S.targetPage = pageCount;
+  const pageTargets = targets.slice((S.targetPage - 1) * pageSize, S.targetPage * pageSize);
   const chance = S.chance == null ? 0 : S.chance;
-  const boostButtons = [10, 30, 50, 75].map(value => `<button class="${S.boost === value ? 'active' : ''}" onclick="setBoost(${value})">${value}%</button>`).join('');
+  const boostOptions = [['x2', 200], ['x5', 500], ['x10', 1000], ['30%', 30], ['50%', 50], ['75%', 75]];
+  const boostButtons = boostOptions.map(([label, value]) => `<button class="${S.boost === value ? 'active' : ''}" ${S.from ? '' : 'disabled'} onclick="setBoost(${value})">${label}</button>`).join('');
+  const balanceCents = Number(S.me.user.balanceCents || 0);
+  const balanceR = (balanceCents / 100).toFixed(2);
+  const addR = (S.addBalance / 100).toFixed(2);
+  const rangeProgress = balanceCents > 0 ? Math.min(100, S.addBalance / balanceCents * 100) : 0;
+  const soundOn = localStorage.getItem('keyser-sound') !== '0';
+  const turboOn = S.turbo;
+  const fromLabel = S.from ? `${money(S.from.priceCents)}${S.addBalance ? ` + ${money(S.addBalance)}` : ''}` : '';
+  const leftEmpty = '<div class="selected-big empty">Выбранный предмет появится здесь</div>';
   return `<section class="upgrid">
-      <div class="panel"><div class="title">ВЫБЕРИТЕ <b>&nbsp;ПРЕДМЕТ ДЛЯ ИСПОЛЬЗОВАНИЯ</b></div>
-        ${selected(S.from)}
-        <div class="pick">${inventory.length ? inventory.map(item => pickCard(item, 'from')).join('') : '<div class="pick-empty">Сначала откройте кейс</div>'}</div>
+      <div class="source-col">
+        <div class="panel-tools">
+          <button type="button" aria-label="Turbo mode" aria-pressed="${turboOn}" title="Turbo mode" onclick="toggleTurbo()">${turboIcon(turboOn)}</button>
+          <button type="button" aria-label="Sound" aria-pressed="${soundOn}" title="Звук" onclick="toggleSoundBtn()">${soundIcon(soundOn)}</button>
+        </div>
+        <div class="panel"><div class="title">ВЫБЕРИТЕ <b>&nbsp;ПРЕДМЕТ ДЛЯ ИСПОЛЬЗОВАНИЯ</b></div>
+          ${S.from ? bigSelected(S.from) : leftEmpty}
+        </div>
+        <div class="add-balance-bar">
+          <div class="add-balance-title">${coinIcon('2rem', '#9AA29F')}<span>Добавить баланс</span></div>
+          <div class="add-balance-mid"><div class="ab-value">${coinIcon('1.6rem')}<b>${money(S.addBalance)}</b></div>
+            <input class="add-balance-range" type="range" min="0" max="${balanceR}" step="0.01" value="${addR}" style="--range-progress:${rangeProgress}%" oninput="setAddBalance(this.value)" ${balanceCents > 0 ? '' : 'disabled'}>
+          </div>
+          <div class="add-balance-max"><span>Макс.</span><div>${coinIcon('1.6rem', '#9AA29F')}<b>${money(balanceCents)}</b></div></div>
+        </div>
       </div>
       <div class="wheelbox">
         <div class="wheelhead"><span>ШАНС АПГРЕЙДА</span><b>${chance}%</b></div>
-        <div class="wheel-stage"><div class="wheel ${S.spinning ? 'spin' : ''}" style="--chance:${chance}%;--chance-half:${chance / 2}%;--angle:${S.spinning ? '1440deg' : '0deg'}">
+        <div class="wheel-stage"><div class="wheel ${S.spinning ? 'spin' : ''}" style="--chance:${chance}%;--chance-half:${chance / 2}%;--angle:${S.spinning ? (turboOn ? '720deg' : '1440deg') : '0deg'}">
           <img class="wheel-logo" src="/chunks/logo.svg" alt=""><div class="wheelcenter"><strong>${chance}%</strong><span>${chance ? 'расчёт по стоимости' : 'выберите предметы'}</span></div>
         </div><i class="pointer" aria-hidden="true"></i></div>
-        <div class="boost-label">УВЕЛИЧИТЬ СТОИМОСТЬ ЦЕЛИ</div><div class="boost-buttons">${boostButtons}</div>
         <button class="upgrade" ${!S.from || !S.to || S.spinning ? 'disabled' : ''} onclick="upgrade()">
           <img class="upgrade-icon" src="/chunks/upgrade.svg" alt="">${S.spinning ? 'АПГРЕЙД...' : 'АПГРЕЙД'}
         </button>
-        <div class="under">${S.from && S.to ? `${money(S.from.priceCents)} → ${money(S.to.priceCents)}` : S.from ? `Цель от ${money(minimumPrice)}` : 'Выберите предмет слева и цель справа'}</div>
+        <div class="under">${S.from && S.to ? `${fromLabel} → ${money(S.to.priceCents)}` : S.from ? `Цель от ${money(minimumPrice)}` : 'Выберите предмет слева и цель справа'}</div>
       </div>
-      <div class="panel target-preview-panel"><div class="title">ВЫБРАННАЯ <b>&nbsp;ЦЕЛЬ АПГРЕЙДА</b></div>
-        ${selected(S.to)}
-        <div class="target-preview-hint">ЦЕЛЬ ВЫБИРАЕТСЯ ТОЛЬКО В РАЗДЕЛЕ «ЦЕЛИ АПГРЕЙДА» НИЖЕ</div>
+      <div class="target-col">
+        <div class="panel target-preview-panel"><div class="title">ВЫБРАННАЯ <b>&nbsp;ЦЕЛЬ АПГРЕЙДА</b></div>
+          ${S.to ? bigSelected(S.to) : leftEmpty}
+        </div>
+        <div class="boost-row"><div class="boost-label">УВЕЛИЧИТЬ СТОИМОСТЬ ЦЕЛИ</div><div class="boost-buttons">${boostButtons}</div></div>
       </div>
     </section>
     <section class="lower upgrade-lists">
       <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/inventary.svg" alt=""><b>МОИ ПРЕДМЕТЫ</b></div></div><div class="upgrade-list-body">${inventory.length ? `<div class="grid upgrade-items-grid">${inventory.map(item => skinCard(item, { button: true, onclick: `choose('${item.assetid}','from')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Ваш инвентарь пуст</strong><span>Открой свой первый кейс</span><button onclick="go(\'cases\')"><img src="/chunks/cases.svg" alt="">ОТКРЫТЬ КЕЙС</button></div>'}</div></div>
-      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${targets.length ? `<div class="grid upgrade-items-grid target-items-grid">${targets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}</div></div>
+      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск" oninput="applyTargetFilters()"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${pageTargets.length ? `<div class="grid upgrade-items-grid target-items-grid">${pageTargets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}${pageCount > 1 ? `<div class="target-pager"><button ${S.targetPage <= 1 ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage - 1})" aria-label="Предыдущая страница">‹</button><span>${S.targetPage} / ${pageCount}</span><button ${S.targetPage >= pageCount ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage + 1})" aria-label="Следующая страница">›</button></div>` : ''}</div></div>
     </section>`;
 }
-
 function inventoryItemCard(item) {
   return `<div class="inventory-item-wrap">${skinCard(item)}<div class="inventory-actions"><button class="sell-item" onclick="sellItem('${item.assetid}')">ПРОДАТЬ ${money(item.priceCents)}</button><button class="upgrade-item" onclick="sendToUpgrade('${item.assetid}')">В АПГРЕЙД</button></div></div>`;
 }
@@ -260,7 +342,7 @@ function casesPage() {
     </article>`).join('')}</div>`;
 }
 function rouletteCard(item) {
-  return `<div class="roulette-card" ${rarityStyle(item)}>${priceTag(item)}${art(item)}<strong>${esc(item.weapon || item.name)}</strong><small>${esc(item.skin || item.marketName || '')}</small>${rarityLine()}</div>`;
+  return `<div class="roulette-card" ${rarityStyle(item)}>${priceTag(item)}${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}${art(item)}<strong>${esc(item.weapon || item.name)}</strong><small>${esc(item.skin || item.marketName || '')}</small>${rarityLine()}</div>`;
 }
 function caseDetailPage() {
   if (!S.me?.authenticated) return loginRequired('КЕЙС', 'Войдите через Steam, чтобы открыть кейс.');
@@ -268,14 +350,21 @@ function caseDetailPage() {
   if (!caseData) return '<div class="empty"><h2>Кейс не найден</h2></div>';
   const insufficient = caseData.priceCents > Number(S.me.user.balanceCents);
   const disabled = !!S.opening || !caseData.available || insufficient;
-  const buttonText = S.opening ? 'ОТКРЫВАЕМ...' : !caseData.available ? 'УЖЕ ОТКРЫТ' : insufficient ? 'НЕДОСТАТОЧНО СРЕДСТВ' : caseData.priceCents ? `КУПИТЬ ЗА ${money(caseData.priceCents)}` : 'КУПИТЬ БЕСПЛАТНО';
+  const missingCents = caseData.priceCents - Number(S.me.user.balanceCents);
+  const buyButton = !insufficient
+    ? `<button class="case-buy-button" ${disabled ? 'disabled' : ''} onclick="openCase('${esc(caseData.id)}')">${S.opening ? 'ОТКРЫВАЕМ...' : !caseData.available ? 'УЖЕ ОТКРЫТ' : caseData.priceCents ? `КУПИТЬ ЗА ${money(caseData.priceCents)}` : 'КУПИТЬ БЕСПЛАТНО'}</button>`
+    : `<div class="insufficient-box">
+        <div class="insufficient-head"><span>Не хватает</span><b>${money(missingCents)}</b>${coinIcon('2rem')}</div>
+        <span class="insufficient-text">Недостаточно средств для открытия кейса</span>
+        <button type="button" class="insufficient-btn" onclick="openPayment()">Пополнить баланс${plusIcon('2.2rem')}</button>
+      </div>`;
   const roulette = S.rouletteItems.length ? `<div class="case-roulette"><i class="roulette-pointer"></i><div class="case-roll-track">${S.rouletteItems.map(rouletteCard).join('')}</div></div>` : '';
   const result = S.caseResult ? `<div class="case-result"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button onclick="go('inventory')">В ИНВЕНТАРЬ</button></div>` : '';
   return `<button class="case-back" onclick="go('cases')">← ВСЕ КЕЙСЫ</button>
     <section class="case-detail">
       <h1>${esc(caseData.name)}</h1>${caseIcon(caseData, true)}
       <div class="case-detail-price">${caseData.priceCents ? money(caseData.priceCents) : 'БЕСПЛАТНО'}</div>
-      <button class="case-buy-button" ${disabled ? 'disabled' : ''} onclick="openCase('${esc(caseData.id)}')">${buttonText}</button>
+      ${buyButton}
       ${roulette}${result}
       <div class="case-loot"><h2>СОДЕРЖИМОЕ</h2><div class="case-items case-items-detail">${caseContents(caseData)}</div></div>
     </section>`;
@@ -318,7 +407,7 @@ function stealPage() {
 }
 
 function profileEmptyState(title, subtitle, buttonText, action) {
-  return `<div class="profile-tab-empty"><div><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/caseGreenIcon.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
+  return `<div class="profile-tab-empty"><div class="pte-copy"><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/caseGreenIcon.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
 }
 function profilePage() {
   if (!S.me?.authenticated) return loginRequired('ЛИЧНЫЙ ПРОФИЛЬ', 'Авторизуйтесь через Steam, чтобы открыть профиль.');
@@ -366,7 +455,10 @@ function siteFooter() {
       <div class="footer-column footer-contacts"><div><b>ПОДДЕРЖКА</b><a href="mailto:support@caser.gg">support@caser.gg</a></div><div><b>СОТРУДНИЧЕСТВО</b><a href="mailto:marketing@caser.gg">marketing@caser.gg</a></div></div>
       <div class="footer-column"><b>НАВИГАЦИЯ</b><button onclick="go('inventory')">Инвентарь</button><button onclick="go('cases')">Кейсы</button><button onclick="go('upgrade')">Апгрейды</button><button onclick="go('rewards')">Награды</button></div>
       <div class="footer-column"><b>ОБЩИЕ ПОЛОЖЕНИЯ</b><a href="/tos.html">Пользовательское соглашение</a><a href="/tos.html">Политика конфиденциальности</a><a href="/tos.html">Политика использования Cookie</a><a href="/tos.html">Политика AML/KYC</a><a href="/tos.html">Контакты</a></div>
-      <div class="footer-language"><button type="button"><span>RU</span><i>⌄</i></button></div>
+      <div class="footer-language"><div class="lang-select">
+        <button type="button" onclick="toggleFooterLang(event)"><span class="lang-flag">${esc(S.footerLang)}</span><b>${esc(S.footerLang)}</b><i class="lang-chevron ${S.footerLangOpen ? 'open' : ''}">${chevronIcon()}</i></button>
+        ${S.footerLangOpen ? `<div class="lang-menu">${LANGS.map(item => `<button type="button" class="${item.code === S.footerLang ? 'active' : ''}" onclick="setFooterLang('${item.code}')"><span class="lang-flag">${esc(item.code)}</span><b>${esc(item.name)}</b>${item.code === S.footerLang ? '<i class="lang-check">✓</i>' : ''}</button>`).join('')}</div>` : ''}
+      </div></div>
     </div>
     <div class="footer-company"><div><b>${esc(S.brand)} © 2026</b><p>Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.</p><span>Не аффилировано с Valve Corp.</span></div><div class="footer-payments"><b>mastercard</b><b>VISA</b></div></div>
     <div class="footer-divider"></div>
@@ -429,9 +521,12 @@ function paymentModal() {
   return `<div class="payment-overlay"><div class="payment-dialog" role="dialog" aria-modal="true" aria-label="Пополнение баланса">
     <header><h2>ПОПОЛНЕНИЕ БАЛАНСА</h2><button onclick="closePayment()" aria-label="Закрыть"><img src="/chunks/closeIcon3.svg" alt=""></button></header>
     <div class="payment-tabs"><button class="${S.paymentTab === 'card' ? 'active' : ''}" onclick="setPaymentTab('card')"><i>▰</i>КАРТОЙ</button><button class="${S.paymentTab === 'crypto' ? 'active' : ''}" onclick="setPaymentTab('crypto')"><i>₿</i>КРИПТОЙ</button><button class="${S.paymentTab === 'skins' ? 'active' : ''}" onclick="setPaymentTab('skins')"><i>◆</i>СКИНАМИ</button></div>
-    <div class="payment-body"><div class="payment-currency"><span>Выберите валюту пополнения</span><button>RUB⌄</button></div><div class="payment-methods">${methods.map(([name, badge], index) => `<button class="${S.paymentMethod === index ? 'active' : ''}" onclick="selectPaymentMethod(${index})">${badge ? `<small>${badge}</small>` : ''}<b>${name}</b></button>`).join('')}</div></div>
+    <div class="payment-body"><div class="payment-currency"><span>Выберите валюту пополнения</span><div class="currency-select">
+      <button type="button" onclick="toggleCurrencyMenu(event)">${esc(S.paymentCurrency)}<i class="currency-chevron ${S.currencyOpen ? 'open' : ''}">${chevronIcon()}</i></button>
+      ${S.currencyOpen ? `<div class="currency-menu">${CURRENCIES.map(item => `<button type="button" class="${item.code === S.paymentCurrency ? 'active' : ''}" onclick="setPaymentCurrency('${item.code}')"><span>${item.flag}</span><b>${esc(item.name)}</b><i>${item.code}</i>${item.code === S.paymentCurrency ? '<em>✓</em>' : ''}</button>`).join('')}</div>` : ''}
+    </div></div><div class="payment-methods">${methods.map(([name, badge], index) => `<button class="${S.paymentMethod === index ? 'active' : ''}" onclick="selectPaymentMethod(${index})">${badge ? `<small>${badge}</small>` : ''}<b>${name}</b></button>`).join('')}</div></div>
     <div class="payment-bottom"><div class="payment-amount-head"><span>СУММА ПОПОЛНЕНИЯ</span><div>${[500,1000,2500,5000].map(amount => `<button class="${S.paymentAmount === amount ? 'active' : ''}" onclick="setPaymentAmount(${amount})">${amount.toLocaleString('ru-RU')}</button>`).join('')}</div></div>
-      <label class="payment-amount"><span><input id="payment-amount" type="number" min="50" max="100000" value="${S.paymentAmount}"><b>₽</b></span><small>мин. 50</small></label>
+      <label class="payment-amount"><span><input id="payment-amount" type="number" min="50" max="100000" value="${S.paymentAmount}"><b>${CURRENCY_BY_CODE[S.paymentCurrency]?.symbol || '₽'}</b></span><small>мин. 50</small></label>
       <div class="payment-promo"><span>◇</span><input id="payment-promo" placeholder="Введите промокод"><button onclick="applyPaymentPromo()">ПРИМЕНИТЬ</button></div>
       <button class="payment-submit" onclick="submitPayment()">ПОПОЛНИТЬ</button><p>Если после оплаты прошло более 30 минут, а баланс на сайте не пополнился, напишите нам в техподдержку</p>
     </div>
@@ -459,18 +554,22 @@ function pageContent() {
 }
 function render() {
   $('#app').innerHTML = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page">${pageContent()}</div></main></div>${siteFooter()}
-    <div class="support"><button onclick="openChat()">ПОДДЕРЖКА</button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}`;
+    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}`;
   if (S.chat) loadChat();
 }
 
+function upgradeBaseValue() {
+  return (S.from ? Number(S.from.priceCents) : 0) + S.addBalance;
+}
 function recalculateChance() {
+  const value = upgradeBaseValue();
   S.chance = S.from && S.to
-    ? Math.min(95, Math.max(1, Math.floor(Number(S.from.priceCents) / Number(S.to.priceCents) * 10000) / 100))
+    ? Math.min(95, Math.max(1, Math.floor(value / Number(S.to.priceCents) * 10000) / 100))
     : null;
 }
 function upgradeTargets() {
   if (!S.from) return [];
-  const minimum = Math.ceil(S.from.priceCents * (1 + S.boost / 100));
+  const minimum = Math.ceil(upgradeBaseValue() * (1 + S.boost / 100));
   return S.catalog.filter(item => item.priceCents >= minimum).sort((a, b) => a.priceCents - b.priceCents);
 }
 function choose(id, side) {
@@ -488,15 +587,42 @@ function choose(id, side) {
 function setBoost(value, shouldRender = true) {
   S.boost = Number(value);
   const targets = upgradeTargets();
-  const tierIndex = { 10: 0, 30: 1, 50: 2, 75: 3 }[S.boost] || 0;
+  const tierIndex = { 200: 0, 500: 1, 1000: 2, 30: 3, 50: 4, 75: 5 }[S.boost] || 3;
   S.to = targets[Math.min(tierIndex, Math.max(0, targets.length - 1))] || null;
   recalculateChance();
   if (shouldRender) render();
 }
+function setAddBalance(value) {
+  const balanceCents = Number(S.me.user.balanceCents || 0);
+  S.addBalance = Math.round(Math.min(Math.max(Number(value) || 0, 0), balanceCents / 100) * 100);
+  recalculateChance();
+  render();
+}
 function applyTargetFilters() {
+  const active = document.activeElement;
+  const activeId = active && active.id ? active.id : null;
   S.targetMin = document.querySelector('#target-min')?.value?.trim() || '';
   S.targetMax = document.querySelector('#target-max')?.value?.trim() || '';
   S.targetSearch = document.querySelector('#target-search')?.value?.trim() || '';
+  S.targetPage = 1;
+  render();
+  if (activeId) {
+    const el = typeof document.getElementById === 'function' ? document.getElementById(activeId) : null;
+    if (el) {
+      el.focus();
+      const len = el.value.length;
+      try { el.setSelectionRange(len, len); } catch (_) {}
+    }
+  }
+}
+function setTargetPage(page) {
+  const pageSize = 12;
+  const query = S.targetSearch.trim().toLowerCase();
+  const minT = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+  const maxT = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
+  const filtered = S.catalog.filter(item => item.priceCents >= minT && item.priceCents <= maxT && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
+  const count = Math.max(1, Math.ceil(filtered.length / pageSize));
+  S.targetPage = Math.max(1, Math.min(page, count));
   render();
 }
 function sendToUpgrade(id) {
@@ -514,7 +640,7 @@ async function sellItem(id) {
     if (S.from && String(S.from.assetid) === String(id)) { S.from = null; S.to = null; S.chance = null; }
     render();
     toast(`Предмет продан за ${money(result.amountCents)}`);
-  } catch (error) { toast(error.message); }
+  } catch (error) { toast(error.message, 'error'); }
 }
 
 async function refreshAccount() {
@@ -527,6 +653,8 @@ async function refreshAccount() {
   S.drops = drops;
   S.profile = profile;
   S.globalStats = stats;
+  const balanceCents = Number(S.me?.user?.balanceCents || 0);
+  if (S.addBalance > balanceCents) S.addBalance = Math.max(0, balanceCents);
 }
 
 function selectCase(caseId) {
@@ -572,7 +700,7 @@ async function openCase(caseId) {
     toast(`${result.item.name} добавлен в инвентарь сайта`);
   } catch (error) {
     S.rouletteItems = [];
-    toast(error.message);
+    toast(error.message, 'error');
   } finally {
     S.opening = null;
     render();
@@ -586,20 +714,52 @@ async function upgrade() {
   try {
     const result = await api('/api/upgrade', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fromAssetId: S.from.assetid, toCatalogId: S.to.catalogId, boostPercent: S.boost })
+      body: JSON.stringify({ fromAssetId: S.from.assetid, toCatalogId: S.to.catalogId, boostPercent: S.boost, addBalanceCents: S.addBalance })
     });
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    await new Promise(resolve => setTimeout(resolve, S.turbo ? 250 : 1200));
     await refreshAccount();
     S.from = null;
     S.to = null;
     S.chance = null;
+    S.addBalance = 0;
     toast(result.won ? `${result.item.name} добавлен в инвентарь сайта` : 'Апгрейд не удался — исходный предмет использован');
   } catch (error) {
-    toast(error.message);
+    toast(error.message, 'error');
   } finally {
     S.spinning = false;
     render();
   }
+}
+
+function toggleSoundBtn() {
+  const next = localStorage.getItem('keyser-sound') === '0';
+  localStorage.setItem('keyser-sound', next ? '1' : '0');
+  render();
+}
+function toggleTurbo() {
+  S.turbo = !S.turbo;
+  localStorage.setItem('keyser-turbo', S.turbo ? '1' : '0');
+  render();
+}
+function toggleCurrencyMenu(event) {
+  event.stopPropagation();
+  S.currencyOpen = !S.currencyOpen;
+  render();
+}
+function setPaymentCurrency(code) {
+  S.paymentCurrency = code;
+  S.currencyOpen = false;
+  render();
+}
+function toggleFooterLang(event) {
+  event.stopPropagation();
+  S.footerLangOpen = !S.footerLangOpen;
+  render();
+}
+function setFooterLang(code) {
+  S.footerLang = code;
+  S.footerLangOpen = false;
+  render();
 }
 
 async function loadChat() {
@@ -719,7 +879,8 @@ function applyPaymentPromo() {
 }
 function submitPayment() {
   const amount = Number(document.querySelector('#payment-amount')?.value || S.paymentAmount);
-  if (!Number.isFinite(amount) || amount < 50) return toast('Минимальная сумма пополнения — 50 ₽');
+  const symbol = CURRENCY_BY_CODE[S.paymentCurrency]?.symbol || '₽';
+  if (!Number.isFinite(amount) || amount < 50) return toast(`Минимальная сумма пополнения — 50 ${symbol}`);
   toast('Платёжный провайдер пока не подключён');
 }
 async function openChat() {
@@ -749,17 +910,18 @@ async function submitSupportEmail() {
   } catch (error) { toast(error.message); }
 }
 function closeChat() { S.chat = false; render(); }
-function toast(text) {
+function toast(text, type = '') {
   const root = $('#toast-root');
-  root.innerHTML = `<div class="toast">${esc(text)}</div>`;
+  root.innerHTML = `<div class="toast ${type}">${esc(text)}</div>`;
   setTimeout(() => { root.innerHTML = ''; }, 3200);
 }
 
 Object.assign(window, {
-  go, sideTab, setProfileTab, choose, setBoost, applyTargetFilters, sendToUpgrade, sellItem, selectCase, openCase, upgrade,
+  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, selectCase, openCase, upgrade,
   login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
-  openChat, submitSupportEmail, closeChat, sendChat
+  openChat, submitSupportEmail, closeChat, sendChat,
+  toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang
 });
 boot();

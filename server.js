@@ -6,8 +6,6 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
-// Load only safe runtime values needed by the server. BASE_URL is intentionally
-// resolved from the current request unless it is supplied by the host process.
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
   const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT']);
@@ -38,7 +36,7 @@ const RARITIES = {
   contraband: { name: 'Контрабандное',    color: '#e4ae39', rank: 6 }
 };
 
-function catalogItem(id, name, image, priceCents, rarity) {
+function catalogItem(id, name, image, priceCents, rarity, wear = '') {
   const [weapon, skin = ''] = name.split(' | ');
   return {
     catalogId: id,
@@ -47,6 +45,7 @@ function catalogItem(id, name, image, priceCents, rarity) {
     weapon,
     skin,
     marketName: skin,
+    wear,
     icon: `/static/items/${image}.png`,
     priceCents,
     rarity: RARITIES[rarity].name,
@@ -56,23 +55,152 @@ function catalogItem(id, name, image, priceCents, rarity) {
   };
 }
 
-// Internal site catalog. Prices are part of the site's economy and are saved with every won item.
 const CATALOG = [
-  catalogItem('p250-sand-dune', 'P250 | Sand Dune', 'p250-sand-dune', 3500, 'consumer'),
-  catalogItem('awp-safari-mesh', 'AWP | Safari Mesh', 'awp-safari-mesh', 8900, 'industrial'),
-  catalogItem('mp7-cirrus', 'MP7 | Cirrus', 'mp7-cirrus', 14600, 'milspec'),
-  catalogItem('ak47-elite-build', 'AK-47 | Elite Build', 'ak47-elite-build', 22500, 'milspec'),
-  catalogItem('awp-worm-god', 'AWP | Worm God', 'awp-worm-god', 38900, 'restricted'),
-  catalogItem('ak47-slate', 'AK-47 | Slate', 'ak47-slate', 64900, 'restricted'),
-  catalogItem('usp-cortex', 'USP-S | Cortex', 'usp-cortex', 125000, 'classified'),
-  catalogItem('glock-vogue', 'Glock-18 | Vogue', 'glock-vogue', 185000, 'classified'),
-  catalogItem('mac10-disco-tech', 'MAC-10 | Disco Tech', 'mac10-disco-tech', 230000, 'classified'),
-  catalogItem('m4a1-hyper-beast', 'M4A1-S | Hyper Beast', 'm4a1-hyper-beast', 420000, 'covert'),
-  catalogItem('ak47-neon-rider', 'AK-47 | Neon Rider', 'ak47-neon-rider', 650000, 'covert'),
-  catalogItem('awp-asiimov', 'AWP | Asiimov', 'awp-asiimov', 980000, 'covert'),
-  catalogItem('deagle-printstream', 'Desert Eagle | Printstream', 'deagle-printstream', 1350000, 'covert'),
-  catalogItem('ak47-wild-lotus', 'AK-47 | Wild Lotus', 'ak47-wild-lotus', 9500000, 'covert'),
-  catalogItem('m4a4-howl', 'M4A4 | Howl', 'm4a4-howl', 35000000, 'contraband')
+  catalogItem('p250-sand-dune', 'P250 | Sand Dune', 'p250-sand-dune', 3500, 'consumer', 'FN'),
+  catalogItem('awp-safari-mesh', 'AWP | Safari Mesh', 'awp-safari-mesh', 8900, 'industrial', 'BS'),
+  catalogItem('mp7-cirrus', 'MP7 | Cirrus', 'mp7-cirrus', 14600, 'milspec', 'MW'),
+  catalogItem('ak47-elite-build', 'AK-47 | Elite Build', 'ak47-elite-build', 22500, 'milspec', 'FT'),
+  catalogItem('awp-worm-god', 'AWP | Worm God', 'awp-worm-god', 38900, 'restricted', 'WW'),
+  catalogItem('ak47-slate', 'AK-47 | Slate', 'ak47-slate', 64900, 'restricted', 'FT'),
+  catalogItem('usp-cortex', 'USP-S | Cortex', 'usp-cortex', 125000, 'classified', 'MW'),
+  catalogItem('glock-vogue', 'Glock-18 | Vogue', 'glock-vogue', 185000, 'classified', 'FN'),
+  catalogItem('mac10-disco-tech', 'MAC-10 | Disco Tech', 'mac10-disco-tech', 230000, 'classified', 'FT'),
+  catalogItem('m4a1-hyper-beast', 'M4A1-S | Hyper Beast', 'm4a1-hyper-beast', 420000, 'covert', 'MW'),
+  catalogItem('ak47-neon-rider', 'AK-47 | Neon Rider', 'ak47-neon-rider', 650000, 'covert', 'FN'),
+  catalogItem('awp-asiimov', 'AWP | Asiimov', 'awp-asiimov', 980000, 'covert', 'FT'),
+  catalogItem('deagle-printstream', 'Desert Eagle | Printstream', 'deagle-printstream', 1350000, 'covert', 'FN'),
+  catalogItem('ak47-wild-lotus', 'AK-47 | Wild Lotus', 'ak47-wild-lotus', 9500000, 'covert', 'FN'),
+  catalogItem('m4a4-howl', 'M4A4 | Howl', 'm4a4-howl', 35000000, 'contraband', 'FT'),
+catalogItem('ak47-redline', 'AK-47 | Redline', 'ak47-redline', 105000, 'restricted', 'MW'),
+  catalogItem('ak47-frontside-misty', 'AK-47 | Frontside Misty', 'ak47-frontside-misty', 98000, 'restricted', 'FT'),
+  catalogItem('ak47-aquamarine-revenge', 'AK-47 | Aquamarine Revenge', 'ak47-aquamarine-revenge', 620000, 'covert', 'MW'),
+  catalogItem('ak47-neon-revolution', 'AK-47 | Neon Revolution', 'ak47-neon-revolution', 550000, 'covert', 'FT'),
+  catalogItem('ak47-bloodsport', 'AK-47 | Bloodsport', 'ak47-bloodsport', 890000, 'covert', 'FN'),
+  catalogItem('ak47-vulcan', 'AK-47 | Vulcan', 'ak47-vulcan', 1150000, 'covert', 'FN'),
+  catalogItem('ak47-wasteland-rebel', 'AK-47 | Wasteland Rebel', 'ak47-wasteland-rebel', 72000, 'restricted', 'FT'),
+  catalogItem('m4a4-dragon-king', 'M4A4 | Dragon King', 'm4a4-dragon-king', 76000, 'restricted', 'MW'),
+  catalogItem('m4a4-royal-paladin', 'M4A4 | Royal Paladin', 'm4a4-royal-paladin', 168000, 'classified', 'FN'),
+  catalogItem('m4a4-the-emperor', 'M4A4 | The Emperor', 'm4a4-the-emperor', 740000, 'covert', 'MW'),
+  catalogItem('m4a4-desolate-space', 'M4A4 | Desolate Space', 'm4a4-desolate-space', 155000, 'classified', 'FT'),
+  catalogItem('m4a4-neo-noir', 'M4A4 | Neo-Noir', 'm4a4-neo-noir', 830000, 'covert', 'FN'),
+  catalogItem('m4a1-golden-coil', 'M4A1-S | Golden Coil', 'm4a1-golden-coil', 680000, 'covert', 'MW'),
+  catalogItem('m4a1-chanticos-fire', "M4A1-S | Chantico's Fire", 'm4a1-chanticos-fire', 640000, 'covert', 'FT'),
+  catalogItem('m4a1-mecha-industries', 'M4A1-S | Mecha Industries', 'm4a1-mecha-industries', 178000, 'classified', 'FN'),
+  catalogItem('m4a1-briefing', 'M4A1-S | Briefing', 'm4a1-briefing', 149000, 'classified', 'MW'),
+  catalogItem('m4a1-decimator', 'M4A1-S | Decimator', 'm4a1-decimator', 92000, 'restricted', 'FT'),
+  catalogItem('awp-dragon-lore', 'AWP | Dragon Lore', 'awp-dragon-lore', 8500000, 'contraband', 'FT'),
+  catalogItem('awp-medusa', 'AWP | Medusa', 'awp-medusa', 6200000, 'contraband', 'WW'),
+  catalogItem('awp-lightning-strike', 'AWP | Lightning Strike', 'awp-lightning-strike', 980000, 'covert', 'FN'),
+  catalogItem('awp-graphite', 'AWP | Graphite', 'awp-graphite', 210000, 'classified', 'MW'),
+  catalogItem('awp-redline', 'AWP | Redline', 'awp-redline', 118000, 'restricted', 'MW'),
+  catalogItem('awp-hyper-beast', 'AWP | Hyper Beast', 'awp-hyper-beast', 760000, 'covert', 'FT'),
+  catalogItem('awp-fever-dream', 'AWP | Fever Dream', 'awp-fever-dream', 108000, 'restricted', 'MW'),
+  catalogItem('awp-mortis', 'AWP | Mortis', 'awp-mortis', 640000, 'covert', 'MW'),
+  catalogItem('awp-atheris', 'AWP | Atheris', 'awp-atheris', 95000, 'restricted', 'FT'),
+  catalogItem('awp-neo-noir', 'AWP | Neo-Noir', 'awp-neo-noir', 880000, 'covert', 'MW'),
+  catalogItem('famas-roll-cage', 'FAMAS | Roll Cage', 'famas-roll-cage', 132000, 'classified', 'MW'),
+  catalogItem('famas-commemoration', 'FAMAS | Commemoration', 'famas-commemoration', 480000, 'covert', 'MW'),
+  catalogItem('famas-neural-net', 'FAMAS | Neural Net', 'famas-neural-net', 56000, 'restricted', 'MW'),
+  catalogItem('famas-afterimage', 'FAMAS | Afterimage', 'famas-afterimage', 62000, 'restricted', 'FT'),
+  catalogItem('galil-eco', 'Galil AR | Eco', 'galil-eco', 28000, 'milspec', 'FN'),
+  catalogItem('galil-rocket-pop', 'Galil AR | Rocket Pop', 'galil-rocket-pop', 66000, 'restricted', 'FT'),
+  catalogItem('galil-chatterbox', 'Galil AR | Chatterbox', 'galil-chatterbox', 350000, 'covert', 'FN'),
+  catalogItem('galil-sugar-rush', 'Galil AR | Sugar Rush', 'galil-sugar-rush', 61000, 'restricted', 'MW'),
+  catalogItem('aug-chameleon', 'AUG | Chameleon', 'aug-chameleon', 27000, 'milspec', 'FN'),
+  catalogItem('aug-bengal-tiger', 'AUG | Bengal Tiger', 'aug-bengal-tiger', 54000, 'restricted', 'MW'),
+  catalogItem('aug-syd-mead', 'AUG | Syd Mead', 'aug-syd-mead', 420000, 'covert', 'MW'),
+  catalogItem('aug-ricochet', 'AUG | Ricochet', 'aug-ricochet', 29000, 'milspec', 'FN'),
+  catalogItem('ssg-dragonfire', 'SSG 08 | Dragonfire', 'ssg-dragonfire', 520000, 'covert', 'FN'),
+  catalogItem('ssg-blood-in-the-water', 'SSG 08 | Blood in the Water', 'ssg-blood-in-the-water', 195000, 'classified', 'MW'),
+  catalogItem('ssg-death-strike', 'SSG 08 | Death Strike', 'ssg-death-strike', 75000, 'restricted', 'FT'),
+  catalogItem('ssg-detour', 'SSG 08 | Detour', 'ssg-detour', 24000, 'milspec', 'FN'),
+  catalogItem('p90-death-by-kitty', 'P90 | Death by Kitty', 'p90-death-by-kitty', 470000, 'covert', 'MW'),
+  catalogItem('p90-asiimov', 'P90 | Asiimov', 'p90-asiimov', 450000, 'covert', 'FT'),
+  catalogItem('p90-emerald-dragon', 'P90 | Emerald Dragon', 'p90-emerald-dragon', 158000, 'classified', 'FN'),
+  catalogItem('p90-shallow-grave', 'P90 | Shallow Grave', 'p90-shallow-grave', 144000, 'classified', 'MW'),
+  catalogItem('p90-neoqueen', 'P90 | Neoqueen', 'p90-neoqueen', 82000, 'restricted', 'FT'),
+  catalogItem('mp7-bloodsport', 'MP7 | Bloodsport', 'mp7-bloodsport', 166000, 'classified', 'FN'),
+  catalogItem('mp7-nemesis', 'MP7 | Nemesis', 'mp7-nemesis', 78000, 'restricted', 'MW'),
+  catalogItem('mp7-neon-ply', 'MP7 | Neon Ply', 'mp7-neon-ply', 32000, 'milspec', 'FN'),
+  catalogItem('mp7-special-delivery', 'MP7 | Special Delivery', 'mp7-special-delivery', 74000, 'restricted', 'FT'),
+  catalogItem('mp9-hot-rod', 'MP9 | Hot Rod', 'mp9-hot-rod', 140000, 'classified', 'FN'),
+  catalogItem('mp9-bioleak', 'MP9 | Bioleak', 'mp9-bioleak', 35000, 'milspec', 'FN'),
+  catalogItem('mp9-ruby-poison-dart', 'MP9 | Ruby Poison Dart', 'mp9-ruby-poison-dart', 70000, 'restricted', 'MW'),
+  catalogItem('mp9-starlight-protector', 'MP9 | Starlight Protector', 'mp9-starlight-protector', 138000, 'classified', 'FN'),
+  catalogItem('ump-primal-saber', 'UMP-45 | Primal Saber', 'ump-primal-saber', 380000, 'covert', 'MW'),
+  catalogItem('ump-momentum', 'UMP-45 | Momentum', 'ump-momentum', 63000, 'restricted', 'FT'),
+  catalogItem('ump-metal-flowers', 'UMP-45 | Metal Flowers', 'ump-metal-flowers', 33000, 'milspec', 'FN'),
+  catalogItem('ump-crime-scene', 'UMP-45 | Crime Scene', 'ump-crime-scene', 59000, 'restricted', 'WW'),
+  catalogItem('mac10-stalker', 'MAC-10 | Stalker', 'mac10-stalker', 34000, 'milspec', 'FN'),
+  catalogItem('mac10-whitefish', 'MAC-10 | Whitefish', 'mac10-whitefish', 65000, 'restricted', 'MW'),
+  catalogItem('mac10-toybox', 'MAC-10 | Toybox', 'mac10-toybox', 67000, 'restricted', 'FT'),
+  catalogItem('mac10-pipe-down', 'MAC-10 | Pipe Down', 'mac10-pipe-down', 30000, 'milspec', 'FN'),
+  catalogItem('mp5-phosphor', 'MP5-SD | Phosphor', 'mp5-phosphor', 86000, 'restricted', 'MW'),
+  catalogItem('mp5-agent', 'MP5-SD | Agent', 'mp5-agent', 148000, 'classified', 'MW'),
+  catalogItem('mp5-gauss', 'MP5-SD | Gauss', 'mp5-gauss', 29000, 'milspec', 'FN'),
+  catalogItem('mp5-oxide-oasis', 'MP5-SD | Oxide Oasis', 'mp5-oxide-oasis', 79000, 'restricted', 'FT'),
+  catalogItem('p250-see-ya-later', 'P250 | See Ya Later', 'p250-see-ya-later', 87000, 'restricted', 'MW'),
+  catalogItem('p250-asiimov', 'P250 | Asiimov', 'p250-asiimov', 186000, 'classified', 'FN'),
+  catalogItem('p250-vino-primo', 'P250 | Vino Primo', 'p250-vino-primo', 30000, 'milspec', 'FN'),
+  catalogItem('p250-nevermore', 'P250 | Nevermore', 'p250-nevermore', 28000, 'milspec', 'MW'),
+  catalogItem('glock-fade', 'Glock-18 | Fade', 'glock-fade', 780000, 'covert', 'FN'),
+  catalogItem('glock-dragon-tattoo', 'Glock-18 | Dragon Tattoo', 'glock-dragon-tattoo', 165000, 'classified', 'MW'),
+  catalogItem('glock-water-elemental', 'Glock-18 | Water Elemental', 'glock-water-elemental', 158000, 'classified', 'FN'),
+  catalogItem('glock-moonrise', 'Glock-18 | Moonrise', 'glock-moonrise', 69000, 'restricted', 'FT'),
+  catalogItem('glock-neo-noir', 'Glock-18 | Neo-Noir', 'glock-neo-noir', 33000, 'milspec', 'FN'),
+  catalogItem('usp-kill-confirmed', 'USP-S | Kill Confirmed', 'usp-kill-confirmed', 990000, 'covert', 'FN'),
+  catalogItem('usp-neo-noir', 'USP-S | Neo-Noir', 'usp-neo-noir', 720000, 'covert', 'MW'),
+  catalogItem('usp-cyrex', 'USP-S | Cyrex', 'usp-cyrex', 170000, 'classified', 'FN'),
+  catalogItem('usp-orion', 'USP-S | Orion', 'usp-orion', 162000, 'classified', 'MW'),
+  catalogItem('usp-blueprint', 'USP-S | Blueprint', 'usp-blueprint', 37000, 'milspec', 'FN'),
+  catalogItem('deagle-blaze', 'Desert Eagle | Blaze', 'deagle-blaze', 240000, 'classified', 'FN'),
+  catalogItem('deagle-code-red', 'Desert Eagle | Code Red', 'deagle-code-red', 210000, 'classified', 'FN'),
+  catalogItem('deagle-kumicho-dragon', 'Desert Eagle | Kumicho Dragon', 'deagle-kumicho-dragon', 460000, 'covert', 'MW'),
+  catalogItem('deagle-directive', 'Desert Eagle | Directive', 'deagle-directive', 94000, 'restricted', 'FT'),
+  catalogItem('deagle-oxide-blaze', 'Desert Eagle | Oxide Blaze', 'deagle-oxide-blaze', 39000, 'milspec', 'FN'),
+  catalogItem('tec9-fuel-injector', 'Tec-9 | Fuel Injector', 'tec9-fuel-injector', 340000, 'covert', 'MW'),
+  catalogItem('tec9-avalanche', 'Tec-9 | Avalanche', 'tec9-avalanche', 88000, 'restricted', 'MW'),
+  catalogItem('tec9-re-entry', 'Tec-9 | Re-Entry', 'tec9-re-entry', 40000, 'milspec', 'FN'),
+  catalogItem('tec9-ice-cap', 'Tec-9 | Ice Cap', 'tec9-ice-cap', 85000, 'restricted', 'FT'),
+  catalogItem('fiveseven-hyper-beast', 'Five-SeveN | Hyper Beast', 'fiveseven-hyper-beast', 560000, 'covert', 'MW'),
+  catalogItem('fiveseven-monkey-business', 'Five-SeveN | Monkey Business', 'fiveseven-monkey-business', 176000, 'classified', 'FN'),
+  catalogItem('fiveseven-flame-test', 'Five-SeveN | Flame Test', 'fiveseven-flame-test', 90000, 'restricted', 'MW'),
+  catalogItem('fiveseven-boost-protocol', 'Five-SeveN | Boost Protocol', 'fiveseven-boost-protocol', 39000, 'milspec', 'FN'),
+  catalogItem('duals-melondrama', 'Dual Berettas | Melondrama', 'duals-melondrama', 31000, 'milspec', 'FN'),
+  catalogItem('duals-dezastre', 'Dual Berettas | Dezastre', 'duals-dezastre', 68000, 'restricted', 'MW'),
+  catalogItem('duals-marina', 'Dual Berettas | Marina', 'duals-marina', 5400, 'consumer', 'FT'),
+  catalogItem('nova-hyper-beast', 'Nova | Hyper Beast', 'nova-hyper-beast', 320000, 'covert', 'MW'),
+  catalogItem('nova-antique', 'Nova | Antique', 'nova-antique', 122000, 'classified', 'MW'),
+  catalogItem('nova-toy-soldier', 'Nova | Toy Soldier', 'nova-toy-soldier', 62000, 'restricted', 'FT'),
+  catalogItem('xm1014-zombie-offensive', 'XM1014 | Zombie Offensive', 'xm1014-zombie-offensive', 66000, 'restricted', 'MW'),
+  catalogItem('xm1014-red-python', 'XM1014 | Red Python', 'xm1014-red-python', 26000, 'milspec', 'FN'),
+  catalogItem('xm1014-seasons', 'XM1014 | Seasons', 'xm1014-seasons', 63000, 'restricted', 'FT'),
+  catalogItem('mag7-justice', 'MAG-7 | Justice', 'mag7-justice', 118000, 'classified', 'MW'),
+  catalogItem('mag7-bulldozer', 'MAG-7 | Bulldozer', 'mag7-bulldozer', 64000, 'restricted', 'FN'),
+  catalogItem('mag7-heat', 'MAG-7 | Heat', 'mag7-heat', 24000, 'milspec', 'FN'),
+  catalogItem('sawed-the-kraken', 'Sawed-Off | The Kraken', 'sawed-the-kraken', 300000, 'covert', 'MW'),
+  catalogItem('sawed-wasteland-princess', 'Sawed-Off | Wasteland Princess', 'sawed-wasteland-princess', 116000, 'classified', 'MW'),
+  catalogItem('sawed-yorick', 'Sawed-Off | Yorick', 'sawed-yorick', 60000, 'restricted', 'FT'),
+  catalogItem('m249-nebula-crusader', 'M249 | Nebula Crusader', 'm249-nebula-crusader', 310000, 'covert', 'MW'),
+  catalogItem('m249-magma', 'M249 | Magma', 'm249-magma', 114000, 'classified', 'MW'),
+  catalogItem('m249-emerald-poison-dart', 'M249 | Emerald Poison Dart', 'm249-emerald-poison-dart', 24000, 'milspec', 'FN'),
+  catalogItem('negev-ultralight', 'Negev | Ultralight', 'negev-ultralight', 112000, 'classified', 'FN'),
+  catalogItem('negev-lionfish', 'Negev | Lionfish', 'negev-lionfish', 57000, 'restricted', 'MW'),
+  catalogItem('negev-power-loader', 'Negev | Power Loader', 'negev-power-loader', 23000, 'milspec', 'FN'),
+  catalogItem('scar-bloodsport', 'SCAR-20 | Bloodsport', 'scar-bloodsport', 128000, 'classified', 'FN'),
+  catalogItem('scar-cardiac', 'SCAR-20 | Cardiac', 'scar-cardiac', 66000, 'restricted', 'MW'),
+  catalogItem('scar-green-plaid', 'SCAR-20 | Green Plaid', 'scar-green-plaid', 25000, 'milspec', 'FN'),
+  catalogItem('g3-executioner', 'G3SG1 | The Executioner', 'g3-executioner', 126000, 'classified', 'MW'),
+  catalogItem('g3-murky', 'G3SG1 | Murky', 'g3-murky', 64000, 'restricted', 'WW'),
+  catalogItem('g3-flux', 'G3SG1 | Flux', 'g3-flux', 8500, 'industrial', 'FT'),
+  catalogItem('karambit-fade', '★ Karambit | Fade', 'karambit-fade', 6200000, 'contraband', 'FN'),
+  catalogItem('karambit-doppler', '★ Karambit | Doppler', 'karambit-doppler', 4800000, 'contraband', 'MW'),
+  catalogItem('bayonet-marble-fade', '★ Bayonet | Marble Fade', 'bayonet-marble-fade', 4100000, 'contraband', 'FN'),
+  catalogItem('butterfly-slaughter', '★ Butterfly Knife | Slaughter', 'butterfly-slaughter', 5600000, 'contraband', 'MW'),
+  catalogItem('flip-doppler', '★ Flip Knife | Doppler', 'flip-doppler', 2600000, 'contraband', 'FN'),
+  catalogItem('gut-tiger-tooth', '★ Gut Knife | Tiger Tooth', 'gut-tiger-tooth', 1500000, 'contraband', 'FN'),
+  catalogItem('falchion-case-hardened', '★ Falchion | Case Hardened', 'falchion-case-hardened', 1200000, 'contraband', 'WW'),
+  catalogItem('karambit-crimson-web', '★ Karambit | Crimson Web', 'karambit-crimson-web', 1900000, 'covert', 'FT'),
 ];
 const CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
 
@@ -333,7 +461,11 @@ function inventoryRows(userId) {
     FROM site_inventory
     WHERE user_id = ? AND status = 'active'
     ORDER BY id DESC
-  `).all(userId).map(row => ({ ...row, assetid: String(row.assetid) }));
+  `).all(userId).map(row => ({
+    ...row,
+    assetid: String(row.assetid),
+    wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
+  }));
 }
 function insertInventoryItem(userId, catalog, source, now = Date.now()) {
   const result = db.prepare(`
@@ -415,7 +547,7 @@ app.get('/auth/steam/callback', async (req, res) => {
     res.status(502).send('Не удалось подтвердить вход через Steam. Вернитесь на сайт и попробуйте ещё раз.');
   }
 });
-// Explicitly opt-in local preview login; never enabled in production by default.
+
 if (process.env.ALLOW_DEV_LOGIN === '1') {
   app.get('/auth/dev', (req, res) => {
     const now = Date.now();
@@ -600,10 +732,12 @@ app.post('/api/upgrade', (req, res) => {
   if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
   const fromId = Number(req.body?.fromAssetId);
   const target = CATALOG_BY_ID.get(String(req.body?.toCatalogId || ''));
-  const boostPercent = Number(req.body?.boostPercent || 10);
-  const allowedBoosts = new Set([10, 30, 50, 75]);
+  const boostPercent = Number(req.body?.boostPercent || 30);
+  const allowedBoosts = new Set([30, 50, 75, 200, 500, 1000]);
+  const addBalanceCents = Math.floor(Number(req.body?.addBalanceCents || 0));
   if (!Number.isSafeInteger(fromId) || !target) return res.status(400).json({ error: 'Выберите оба предмета' });
   if (!allowedBoosts.has(boostPercent)) return res.status(400).json({ error: 'Недопустимый процент апгрейда' });
+  if (!Number.isSafeInteger(addBalanceCents) || addBalanceCents < 0) return res.status(400).json({ error: 'Недопустимая сумма из баланса' });
 
   try {
     const result = db.transaction(() => {
@@ -611,9 +745,15 @@ app.post('/api/upgrade', (req, res) => {
         SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'
       `).get(fromId, account.id);
       if (!from) throw new Error('Исходный предмет уже недоступен');
-      const minimumTargetPrice = Math.ceil(from.price_cents * (1 + boostPercent / 100));
+      if (addBalanceCents > Number(account.balance_cents || 0)) throw new Error('Недостаточно средств на балансе');
+      const totalValue = Number(from.price_cents) + addBalanceCents;
+      const minimumTargetPrice = Math.ceil(totalValue * (1 + boostPercent / 100));
       if (target.priceCents < minimumTargetPrice) throw new Error(`Цель для +${boostPercent}% должна стоить не менее ${minimumTargetPrice / 100} ₽`);
-      const chance = Math.min(95, Math.max(1, Math.floor(from.price_cents / target.priceCents * 10000) / 100));
+      if (addBalanceCents > 0) {
+        db.prepare('UPDATE users SET balance_cents = balance_cents - ?, updated_at = ? WHERE id = ?')
+          .run(addBalanceCents, Date.now(), account.id);
+      }
+      const chance = Math.min(95, Math.max(1, Math.floor(totalValue / target.priceCents * 10000) / 100));
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < chance;
       const now = Date.now();
@@ -632,13 +772,14 @@ app.post('/api/upgrade', (req, res) => {
         won,
         chance,
         boostPercent,
+        addBalanceCents,
         roll: Math.floor(roll * 100) / 100,
         item: won ? { ...target, assetid: String(resultItemId) } : null,
         drop
       };
     })();
     if (result.drop) broadcast('drop', result.drop);
-    res.json({ ok: true, won: result.won, chance: result.chance, boostPercent: result.boostPercent, item: result.item });
+    res.json({ ok: true, won: result.won, chance: result.chance, boostPercent: result.boostPercent, addBalanceCents: result.addBalanceCents, item: result.item });
   } catch (error) {
     res.status(400).json({ error: error.message || 'Не удалось выполнить апгрейд' });
   }

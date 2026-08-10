@@ -34,7 +34,6 @@
 
   window.toggleSound = function (enabled) {
     localStorage.setItem('keyser-sound', enabled ? '1' : '0');
-    if (enabled) playUiSound(520, .035);
     render();
   };
 
@@ -46,26 +45,6 @@
   window.toggleSettings = function () {
     const el = document.querySelector('#upgrade-settings');
     if (el) el.classList.toggle('open');
-  };
-
-  window.playUiSound = function (frequency = 520, duration = .045) {
-    if (localStorage.getItem('keyser-sound') === '0') return;
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = frequency;
-      osc.type = 'sine';
-      gain.gain.setValueAtTime(.0001, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(.035, ctx.currentTime + .008);
-      gain.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + duration);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + duration + .01);
-      setTimeout(() => ctx.close(), 100);
-    } catch (_) {}
   };
 
   window.upgradePage = function () {
@@ -88,15 +67,4 @@
     return html;
   };
 
-  const oldChoose = window.choose;
-  window.choose = function (id, side) {
-    oldChoose(id, side);
-    playUiSound(side === 'from' ? 460 : 620, .035);
-  };
-
-  const oldUpgrade = window.upgrade;
-  window.upgrade = async function () {
-    playUiSound(760, .06);
-    return oldUpgrade();
-  };
 })();
