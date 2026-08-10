@@ -3,7 +3,11 @@ const S = {
   tab: 'inventory', from: null, to: null, chance: null, boost: 10, spinning: false,
   opening: null, activeCase: null, rouletteItems: [], caseResult: null,
   authModal: false, ageAccepted: false, termsAccepted: false,
-  chat: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/'
+  profile: null, profileTab: 'items', settingsOpen: false, settings: null,
+  paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0,
+  targetSearch: '', targetMin: '', targetMax: '',
+  globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
+  chat: false, chatEmail: '', chatEmailReady: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/'
 };
 
 const $ = selector => document.querySelector(selector);
@@ -18,8 +22,10 @@ const rarityStyle = item => `style="--rarity:${safeColor(item?.rarityColor)}"`;
 const image = (src, alt = '') => src
   ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" onerror="this.remove()">`
   : '';
+const avatarImage = user => user?.avatar
+  ? `<img src="${esc(user.avatar)}" alt="${esc(user.name || 'Профиль')}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
+  : '<img src="/chunks/logo.svg" alt="Профиль">';
 const art = item => `<div class="art" ${rarityStyle(item)}>${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '')}</div>`;
-const sourceName = source => String(source || '').startsWith('upgrade') ? 'АПГРЕЙД' : 'КЕЙС';
 
 async function api(url, options) {
   const response = await fetch(url, options);
@@ -30,9 +36,9 @@ async function api(url, options) {
 
 async function boot() {
   try {
-    const [config, me, drops, online, catalog, cases] = await Promise.all([
+    const [config, me, drops, online, catalog, cases, stats] = await Promise.all([
       api('/api/config'), api('/api/me'), api('/api/live-drops'), api('/api/online'),
-      api('/api/catalog'), api('/api/cases')
+      api('/api/catalog'), api('/api/cases'), api('/api/stats')
     ]);
     S.brand = config.brand;
     S.telegram = config.telegram;
@@ -41,9 +47,11 @@ async function boot() {
     S.online = online.online;
     S.catalog = catalog;
     S.cases = cases.cases || [];
+    S.globalStats = stats;
     if (me.authenticated) {
-      const inventory = await api('/api/inventory');
+      const [inventory, profile] = await Promise.all([api('/api/inventory'), api('/api/profile')]);
       S.inventory = inventory.items || [];
+      S.profile = profile;
     }
     render();
     listen();
@@ -69,12 +77,12 @@ function listen() {
 }
 
 function updateOnline() {
-  const element = document.querySelector('[data-online]');
-  if (element) element.textContent = S.online;
+  const elements = document.querySelectorAll?.('[data-online],[data-footer-online]') || [];
+  for (const element of elements) element.textContent = S.online;
 }
 
 function steamIcon() {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-9.78 8h4.16a6 6 0 1 1-.02 4H2.2A10 10 0 1 0 12 2Zm-3.4 9.15a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 0 0 0-3.6Zm5.4-4.05a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Z"/></svg>`;
+  return '<img class="steam-icon" src="/chunks/steamIcon.svg" alt="" aria-hidden="true">';
 }
 
 function telegramIcon() {
@@ -90,7 +98,7 @@ function onlineIcon() {
 }
 
 function header() {
-  const balance = S.me?.authenticated ? money(S.me.user.balanceCents) : '0,00 ₽';
+  const balance = S.me?.authenticated ? money(S.me.user.balanceCents) : null;
   return `<header class="top">
     <div class="brand"><img src="/chunks/logo.svg" alt=""><span>${esc(S.brand)}</span></div>
     <nav class="nav">
@@ -102,10 +110,10 @@ function header() {
     </nav>
     <div class="actions">
       <a class="telegram" href="${esc(S.telegram)}" target="_blank" rel="noopener">${telegramIcon()}</a>
-      <div class="balance">Баланс <b>${balance}</b></div>
+      ${S.me?.authenticated ? `<div class="balance header-balance"><span>Баланс</span><b>${balance}</b><button onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>` : ''}
       ${S.me?.authenticated
-        ? `<button class="steam account-button" onclick="logout()">${S.me.user.avatar ? image(S.me.user.avatar, '') : ''}<span>ВЫЙТИ</span></button>`
-        : `<button class="steam" onclick="login()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>`}
+        ? `<button class="profile-trigger" onclick="go('profile')" aria-label="${esc(S.me.user.name || 'Личный профиль')}">${avatarImage(S.me.user)}<i></i></button>`
+        : `<button class="steam auth-login-button" onclick="login()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>`}
     </div>
   </header>`;
 }
@@ -192,7 +200,11 @@ function upgradePage() {
   if (!S.me?.authenticated) return loginRequired('АПГРЕЙДЫ', 'Войдите в аккаунт. Для апгрейда используются только предметы из инвентаря сайта.');
   const inventory = S.inventory;
   const minimumPrice = S.from ? Math.ceil(S.from.priceCents * (1 + S.boost / 100)) : 0;
-  const targets = S.from ? S.catalog.filter(item => item.priceCents >= minimumPrice) : [];
+  const baseTargets = S.from ? S.catalog.filter(item => item.priceCents >= minimumPrice) : [];
+  const query = S.targetSearch.trim().toLowerCase();
+  const minTarget = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+  const maxTarget = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
+  const targets = baseTargets.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
   const chance = S.chance == null ? 0 : S.chance;
   const boostButtons = [10, 30, 50, 75].map(value => `<button class="${S.boost === value ? 'active' : ''}" onclick="setBoost(${value})">${value}%</button>`).join('');
   return `<section class="upgrid">
@@ -202,7 +214,7 @@ function upgradePage() {
       </div>
       <div class="wheelbox">
         <div class="wheelhead"><span>ШАНС АПГРЕЙДА</span><b>${chance}%</b></div>
-        <div class="wheel-stage"><div class="wheel ${S.spinning ? 'spin' : ''}" style="--chance:${chance}%;--angle:${S.spinning ? '1440deg' : '0deg'}">
+        <div class="wheel-stage"><div class="wheel ${S.spinning ? 'spin' : ''}" style="--chance:${chance}%;--chance-half:${chance / 2}%;--angle:${S.spinning ? '1440deg' : '0deg'}">
           <img class="wheel-logo" src="/chunks/logo.svg" alt=""><div class="wheelcenter"><strong>${chance}%</strong><span>${chance ? 'расчёт по стоимости' : 'выберите предметы'}</span></div>
         </div><i class="pointer" aria-hidden="true"></i></div>
         <div class="boost-label">УВЕЛИЧИТЬ СТОИМОСТЬ ЦЕЛИ</div><div class="boost-buttons">${boostButtons}</div>
@@ -216,23 +228,10 @@ function upgradePage() {
         <div class="target-preview-hint">ЦЕЛЬ ВЫБИРАЕТСЯ ТОЛЬКО В РАЗДЕЛЕ «ЦЕЛИ АПГРЕЙДА» НИЖЕ</div>
       </div>
     </section>
-    <section class="lower">
-      <div class="panel"><div class="title">▣ &nbsp;<b>МОИ ПРЕДМЕТЫ</b></div><div class="grid">${inventory.slice(0, 8).map(item => skinCard(item, { button: true, onclick: `choose('${item.assetid}','from')` })).join('')}</div></div>
-      <div class="panel"><div class="title">⌃ &nbsp;<b>ЦЕЛИ АПГРЕЙДА</b></div><div class="grid">${targets.slice(0, 8).map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div></div>
-    </section>
-    ${dropsSection()}`;
-}
-
-function dropsSection() {
-  return `<section class="panel feed"><div class="title">🔥 &nbsp;<b>ПОСЛЕДНИЕ УДАЧИ</b><span style="margin-left:auto">${S.drops.length ? 'LIVE' : 'ПОКА СОБЫТИЙ НЕТ'}</span></div>
-    <div class="feedgrid">${S.drops.length
-      ? S.drops.slice(0, 12).map(drop => {
-          const item = { name: drop.itemName, weapon: String(drop.itemName).split(' | ')[0], skin: String(drop.itemName).split(' | ')[1] || '', icon: drop.itemIcon, priceCents: drop.priceCents, rarity: drop.rarity, rarityColor: drop.rarityColor };
-          return `<div class="drop skin-item" ${rarityStyle(item)}>${priceTag(item)}${art(item)}<strong>${esc(drop.userName)}</strong><small>${esc(drop.itemName)} · ${sourceName(drop.source)}</small>${rarityLine()}</div>`;
-        }).join('')
-      : '<div class="empty feed-empty"><h2>Пока никто ничего не выиграл</h2><p>Здесь появятся реальные открытия кейсов и удачные апгрейды.</p></div>'}
-    </div>
-  </section>`;
+    <section class="lower upgrade-lists">
+      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/inventary.svg" alt=""><b>МОИ ПРЕДМЕТЫ</b></div></div><div class="upgrade-list-body">${inventory.length ? `<div class="grid upgrade-items-grid">${inventory.map(item => skinCard(item, { button: true, onclick: `choose('${item.assetid}','from')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Ваш инвентарь пуст</strong><span>Открой свой первый кейс</span><button onclick="go(\'cases\')"><img src="/chunks/cases.svg" alt="">ОТКРЫТЬ КЕЙС</button></div>'}</div></div>
+      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${targets.length ? `<div class="grid upgrade-items-grid target-items-grid">${targets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}</div></div>
+    </section>`;
 }
 
 function inventoryItemCard(item) {
@@ -318,6 +317,68 @@ function stealPage() {
     <div class="stealside"><h3>Правила</h3><div class="rule"><b>15 секунд</b>Время на STEAL.</div><div class="rule"><b>3–5%</b>Комиссия задаётся сервером.</div><div class="rule"><b>PvP</b>Победитель определяется сервером.</div></div></div>`;
 }
 
+function profileEmptyState(title, subtitle, buttonText, action) {
+  return `<div class="profile-tab-empty"><div><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/caseGreenIcon.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
+}
+function profilePage() {
+  if (!S.me?.authenticated) return loginRequired('ЛИЧНЫЙ ПРОФИЛЬ', 'Авторизуйтесь через Steam, чтобы открыть профиль.');
+  const profile = S.profile || { user: S.me.user, balanceCents: S.me.user.balanceCents, withdrawnCents: 0, activeItems: S.inventory.length, bestDrop: null, stats: {} };
+  const user = profile.user || S.me.user;
+  const avatar = avatarImage(user);
+  const best = profile.bestDrop
+    ? `<div class="profile-best-item">${skinCard(profile.bestDrop, { className: 'profile-best-skin' })}<span>Отобразился после лучшей игры</span></div>`
+    : '<div class="profile-best-empty"><div class="knife-silhouette">⌁</div><span>Отобразится<br>после первой игры</span></div>';
+  let content = '';
+  if (S.profileTab === 'items') {
+    content = S.inventory.length ? `<div class="profile-items-grid">${S.inventory.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
+  } else if (S.profileTab === 'history') {
+    const hasHistory = Number(profile.stats?.casesOpened || 0) + Number(profile.stats?.soldItems || 0) + Number(profile.stats?.upgradesMade || 0) > 0;
+    content = hasHistory
+      ? `<div class="profile-history"><div><b>${profile.stats?.casesOpened || 0}</b><span>Открыто кейсов</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продано предметов</span></div><div><b>${money(profile.stats?.soldCents || 0)}</b><span>Получено с продаж</span></div></div>`
+      : profileEmptyState('История предметов пуста', 'Открой свой первый кейс', 'Открыть кейс', "go('cases')");
+  } else {
+    content = Number(profile.stats?.upgradesMade || 0) > 0
+      ? `<div class="profile-history"><div><b>${profile.stats.upgradesMade}</b><span>Всего апгрейдов</span></div><div><b>${profile.bestDrop ? money(profile.bestDrop.priceCents) : '—'}</b><span>Лучший результат</span></div></div>`
+      : profileEmptyState('История апгрейдов пуста', 'У пользователя пока нет завершенных апгрейдов', 'История пуста', "go('upgrade')");
+  }
+  return `<section class="profile-page">
+    <div class="profile-summary-grid">
+      <article class="profile-user-card">
+        <div class="profile-identity">${avatar}<div><h1>${esc(user.name || 'Игрок')}</h1><span>ID: ${esc(user.steamid || user.id || '')}</span></div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid || '')}" target="_blank" rel="noopener" aria-label="Steam">${steamIcon()}</a><button onclick="openSettings()" title="Настройки"><img src="/chunks/settingIcon.svg" alt="Настройки"></button><button onclick="logout()" title="Выйти"><img src="/chunks/exitIconGray.svg" alt="Выйти"></button></div></div>
+        <div class="profile-balance-label">Баланс</div><div class="profile-balance"><strong>${money(profile.balanceCents)}</strong><button type="button" onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>
+        <div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened || 0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade || 0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продажи</span></div></div>
+      </article>
+      <article class="profile-best-card"><h2>Лучший дроп</h2>${best}</article>
+      <div class="profile-side-column"><article class="profile-withdraw"><span>Выведено</span><strong>${money(profile.withdrawnCents)}</strong><b>${profile.activeItems || 0} предмета</b></article><article class="profile-coupon"><input placeholder="Персональный купон"><button>ПРИМЕНИТЬ</button></article></div>
+    </div>
+    <div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab === 'items' ? 'active' : ''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab === 'history' ? 'active' : ''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab === 'upgrades' ? 'active' : ''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div>${S.profileTab === 'items' ? '<button class="profile-sell-all" onclick="toast(\'Выберите предмет для продажи\')">ПРОДАТЬ ВСЕ</button>' : ''}</div>
+    <div class="profile-content">${content}</div>
+  </section>`;
+}
+function siteFooter() {
+  const stats = S.globalStats || {};
+  const count = value => Number(value || 0).toLocaleString('ru-RU');
+  return `<footer class="site-footer">
+    <div class="footer-mobile-head"><div><img src="/chunks/logo.svg" alt=""><b>${esc(S.brand)}</b></div><a href="${esc(S.telegram)}" target="_blank" rel="noopener">${telegramIcon()}</a></div>
+    <div class="footer-divider footer-mobile-divider"></div>
+    <div class="footer-main">
+      <div class="footer-brand"><div><img src="/chunks/logo.svg" alt=""><b>${esc(S.brand)}</b></div><p>Улучшай и собирай собственный инвентарь CS2.</p></div>
+      <div class="footer-column footer-contacts"><div><b>ПОДДЕРЖКА</b><a href="mailto:support@caser.gg">support@caser.gg</a></div><div><b>СОТРУДНИЧЕСТВО</b><a href="mailto:marketing@caser.gg">marketing@caser.gg</a></div></div>
+      <div class="footer-column"><b>НАВИГАЦИЯ</b><button onclick="go('inventory')">Инвентарь</button><button onclick="go('cases')">Кейсы</button><button onclick="go('upgrade')">Апгрейды</button><button onclick="go('rewards')">Награды</button></div>
+      <div class="footer-column"><b>ОБЩИЕ ПОЛОЖЕНИЯ</b><a href="/tos.html">Пользовательское соглашение</a><a href="/tos.html">Политика конфиденциальности</a><a href="/tos.html">Политика использования Cookie</a><a href="/tos.html">Политика AML/KYC</a><a href="/tos.html">Контакты</a></div>
+      <div class="footer-language"><button type="button"><span>RU</span><i>⌄</i></button></div>
+    </div>
+    <div class="footer-company"><div><b>${esc(S.brand)} © 2026</b><p>Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.</p><span>Не аффилировано с Valve Corp.</span></div><div class="footer-payments"><b>mastercard</b><b>VISA</b></div></div>
+    <div class="footer-divider"></div>
+    <div class="footer-stats">
+      <div><img src="/chunks/online.svg" alt=""><b data-footer-online>${count(S.online)}</b><span>Онлайн</span></div><i></i>
+      <div><img src="/chunks/allGamers.svg" alt=""><b>${count(stats.totalPlayers)}</b><span>Всего игроков</span></div><i></i>
+      <div><img src="/chunks/cases.svg" alt=""><b>${count(stats.casesOpened)}</b><span>Открыто кейсов</span></div><i></i>
+      <div><img src="/chunks/upgrade.svg" alt=""><b>${count(stats.upgradesMade)}</b><span>Сделано апгрейдов</span></div>
+    </div>
+  </footer>`;
+}
+
 function authConsentModal() {
   const ready = S.ageAccepted && S.termsAccepted;
   const check = value => value ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.2 3.1 3.1L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : '';
@@ -329,30 +390,76 @@ function authConsentModal() {
         <div class="auth-heading"><h2>АВТОРИЗАЦИЯ</h2><p>Для доступа к сервису примите условия пользования и авторизуйтесь через Steam.</p></div>
       </div>
       <div class="auth-consent-body">
-        <div class="auth-check-row" onclick="toggleConsent('age')"><button type="button" role="checkbox" aria-checked="${S.ageAccepted}" class="auth-checkbox ${S.ageAccepted ? 'checked' : ''}">${check(S.ageAccepted)}</button><span>Подтверждаю, что мне больше 18 лет</span></div>
-        <div class="auth-check-row" onclick="toggleConsent('terms')"><button type="button" role="checkbox" aria-checked="${S.termsAccepted}" class="auth-checkbox ${S.termsAccepted ? 'checked' : ''}">${check(S.termsAccepted)}</button><span>Принимаю <a href="/tos.html" onclick="event.stopPropagation()" target="_blank">правила и условия</a> использования сайта</span></div>
-        <button class="auth-steam-button" ${ready ? '' : 'disabled'} onclick="confirmSteamLogin()"><span>ВОЙТИ ЧЕРЕЗ STEAM</span>${steamIcon()}</button>
+        <div class="auth-check-row" onclick="toggleConsent('age')"><button type="button" role="checkbox" data-consent="age" aria-checked="${S.ageAccepted}" class="auth-checkbox ${S.ageAccepted ? 'checked' : ''}">${check(S.ageAccepted)}</button><span>Подтверждаю, что мне больше 18 лет</span></div>
+        <div class="auth-check-row" onclick="toggleConsent('terms')"><button type="button" role="checkbox" data-consent="terms" aria-checked="${S.termsAccepted}" class="auth-checkbox ${S.termsAccepted ? 'checked' : ''}">${check(S.termsAccepted)}</button><span>Принимаю <a href="/tos.html" onclick="event.stopPropagation()" target="_blank">правила и условия</a> использования сайта</span></div>
+        <button class="auth-steam-button" data-auth-submit ${ready ? '' : 'disabled'} onclick="confirmSteamLogin()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>
       </div>
     </div>
   </div>`;
 }
 
+function settingsModal() {
+  const settings = S.settings || { nickname: S.me?.user?.name || '', tradeLink: '', privacy: 'private', streamerMode: false };
+  const options = [
+    ['private', 'Приватный', 'Только вы будете видеть информацию Steam-профиля. Профиль скрыт от парсер-ботов и посторонних пользователей.'],
+    ['friends', 'Доступен только для друзей', 'Информацию профиля смогут видеть авторизованные пользователи из списка друзей.'],
+    ['public', 'Публичный', 'Все пользователи смогут видеть информацию вашего профиля.']
+  ];
+  return `<div class="settings-overlay" role="presentation">
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Настройки">
+      <button class="settings-close" onclick="closeSettings()" aria-label="Закрыть"><img src="/chunks/closeIcon3.svg" alt=""></button>
+      <div class="settings-title"><img src="/chunks/settingIcon.svg" alt=""><h2>НАСТРОЙКИ</h2></div>
+      <div class="settings-scroll">
+        <label class="settings-field"><span>Никнейм</span><input id="settings-nickname" maxlength="32" value="${esc(settings.nickname)}" placeholder="Никнейм"></label>
+        <label class="settings-field"><span>Трейд-ссылка</span><div class="settings-trade"><input id="settings-trade" value="${esc(settings.tradeLink)}" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=..."><button type="button" onclick="copyTradeLink()" title="Копировать">▣</button></div><a href="https://steamcommunity.com/id/me/tradeoffers/privacy#trade_offer_access_url" target="_blank" rel="noreferrer">Узнать свою ссылку</a></label>
+        <section class="settings-privacy"><h3>Приватность Steam</h3>${options.map(([value, title, text]) => `<button type="button" data-privacy="${value}" class="settings-privacy-option ${settings.privacy === value ? 'active' : ''}" onclick="selectPrivacy('${value}')"><i><b></b></i><span><strong>${title}</strong><small>${text}</small></span></button>`).join('')}</section>
+        <section class="settings-streamer"><div><h3>Режим стримера</h3><p>Скрывает личную информацию и баланс для безопасности во время стрима</p></div><button type="button" class="settings-switch ${settings.streamerMode ? 'active' : ''}" aria-pressed="${settings.streamerMode}" onclick="toggleStreamerMode()"><i></i></button></section>
+      </div>
+      <button class="settings-save" onclick="saveSettings()">СОХРАНИТЬ И ЗАКРЫТЬ</button>
+    </div>
+  </div>`;
+}
+
+function paymentModal() {
+  const methods = S.paymentTab === 'card'
+    ? [['КАРТА', 'РЕКОМЕНДУЕМ'], ['СБП', ''], ['GIFT CARD', ''], ['БАНКОВСКИЙ ПЕРЕВОД', '']]
+    : S.paymentTab === 'crypto'
+      ? [['USDT', 'РЕКОМЕНДУЕМ'], ['BITCOIN', ''], ['ETHEREUM', '']]
+      : [['ДЕПОЗИТ СКИНАМИ', 'РЕКОМЕНДУЕМ'], ['TRADE OFFER', '']];
+  return `<div class="payment-overlay"><div class="payment-dialog" role="dialog" aria-modal="true" aria-label="Пополнение баланса">
+    <header><h2>ПОПОЛНЕНИЕ БАЛАНСА</h2><button onclick="closePayment()" aria-label="Закрыть"><img src="/chunks/closeIcon3.svg" alt=""></button></header>
+    <div class="payment-tabs"><button class="${S.paymentTab === 'card' ? 'active' : ''}" onclick="setPaymentTab('card')"><i>▰</i>КАРТОЙ</button><button class="${S.paymentTab === 'crypto' ? 'active' : ''}" onclick="setPaymentTab('crypto')"><i>₿</i>КРИПТОЙ</button><button class="${S.paymentTab === 'skins' ? 'active' : ''}" onclick="setPaymentTab('skins')"><i>◆</i>СКИНАМИ</button></div>
+    <div class="payment-body"><div class="payment-currency"><span>Выберите валюту пополнения</span><button>RUB⌄</button></div><div class="payment-methods">${methods.map(([name, badge], index) => `<button class="${S.paymentMethod === index ? 'active' : ''}" onclick="selectPaymentMethod(${index})">${badge ? `<small>${badge}</small>` : ''}<b>${name}</b></button>`).join('')}</div></div>
+    <div class="payment-bottom"><div class="payment-amount-head"><span>СУММА ПОПОЛНЕНИЯ</span><div>${[500,1000,2500,5000].map(amount => `<button class="${S.paymentAmount === amount ? 'active' : ''}" onclick="setPaymentAmount(${amount})">${amount.toLocaleString('ru-RU')}</button>`).join('')}</div></div>
+      <label class="payment-amount"><span><input id="payment-amount" type="number" min="50" max="100000" value="${S.paymentAmount}"><b>₽</b></span><small>мин. 50</small></label>
+      <div class="payment-promo"><span>◇</span><input id="payment-promo" placeholder="Введите промокод"><button onclick="applyPaymentPromo()">ПРИМЕНИТЬ</button></div>
+      <button class="payment-submit" onclick="submitPayment()">ПОПОЛНИТЬ</button><p>Если после оплаты прошло более 30 минут, а баланс на сайте не пополнился, напишите нам в техподдержку</p>
+    </div>
+  </div></div>`;
+}
+
 function chatModal() {
-  return `<div class="modal" onclick="if(event.target===this)closeChat()"><div class="chat"><div class="chathead"><b>Поддержка</b><button onclick="closeChat()">✕</button></div>
-    <div class="chatbody" id="chatbody">Загрузка...</div><form class="chatform" onsubmit="sendChat(event)"><input id="chatinput" maxlength="2000" placeholder="Сообщение..."><button>ОТПРАВИТЬ</button></form></div></div>`;
+  const emailGate = !S.chatEmailReady ? `<div class="support-email-overlay"><div class="support-email-card"><div><h3>Какой адрес вашей электронной почты?</h3><p>Введите свой email, чтобы узнать, когда мы ответим:</p></div><input id="support-email" type="email" autocomplete="email" value="${esc(S.chatEmail)}" placeholder="Введите свой email..."><button onclick="submitSupportEmail()">УСТАНОВИТЬ МОЙ EMAIL</button></div></div>` : '';
+  return `<div class="support-chat-window" role="dialog" aria-modal="false" aria-label="Чат поддержки">
+    <div class="support-chat-header"><div class="support-agent"><img src="/chunks/logo.svg" alt=""><i></i></div><div><h3>Вопросы? Напишите нам в чат!</h3><span>Наша команда сейчас онлайн</span></div><button onclick="closeChat()" aria-label="Закрыть">×</button></div>
+    <div class="support-chat-body" id="chatbody"><div class="support-welcome">Как мы можем вам помочь с ${esc(S.brand)}?</div></div>
+    <form class="support-composer" onsubmit="sendChat(event)"><input id="chatinput" maxlength="2000" placeholder="Отправьте сообщение..."><button aria-label="Отправить">➤</button></form>
+    ${emailGate}
+  </div>`;
 }
 
 function pageContent() {
   if (S.page === 'cases') return casesPage();
   if (S.page === 'case') return caseDetailPage();
+  if (S.page === 'profile') return profilePage();
   if (S.page === 'inventory') return inventoryPage();
   if (S.page === 'rewards') return rewardsPage();
   if (S.page === 'steal') return stealPage();
   return upgradePage();
 }
 function render() {
-  $('#app').innerHTML = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page">${pageContent()}</div></main></div>
-    <div class="support"><button onclick="openChat()">ПОДДЕРЖКА</button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}`;
+  $('#app').innerHTML = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page">${pageContent()}</div></main></div>${siteFooter()}
+    <div class="support"><button onclick="openChat()">ПОДДЕРЖКА</button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}`;
   if (S.chat) loadChat();
 }
 
@@ -386,6 +493,12 @@ function setBoost(value, shouldRender = true) {
   recalculateChance();
   if (shouldRender) render();
 }
+function applyTargetFilters() {
+  S.targetMin = document.querySelector('#target-min')?.value?.trim() || '';
+  S.targetMax = document.querySelector('#target-max')?.value?.trim() || '';
+  S.targetSearch = document.querySelector('#target-search')?.value?.trim() || '';
+  render();
+}
 function sendToUpgrade(id) {
   const item = S.inventory.find(value => String(value.assetid) === String(id));
   if (!item) return toast('Предмет уже недоступен');
@@ -405,13 +518,15 @@ async function sellItem(id) {
 }
 
 async function refreshAccount() {
-  const [me, inventory, cases, drops] = await Promise.all([
-    api('/api/me'), api('/api/inventory'), api('/api/cases'), api('/api/live-drops')
+  const [me, inventory, cases, drops, profile, stats] = await Promise.all([
+    api('/api/me'), api('/api/inventory'), api('/api/cases'), api('/api/live-drops'), api('/api/profile'), api('/api/stats')
   ]);
   S.me = me;
   S.inventory = inventory.items || [];
   S.cases = cases.cases || [];
   S.drops = drops;
+  S.profile = profile;
+  S.globalStats = stats;
 }
 
 function selectCase(caseId) {
@@ -488,15 +603,16 @@ async function upgrade() {
 }
 
 async function loadChat() {
+  if (!S.chatEmailReady) return;
   if (!S.me?.authenticated) {
-    $('#chatbody').innerHTML = '<div class="empty">Войдите через Steam для чата поддержки.</div>';
+    $('#chatbody').innerHTML = '<div class="support-system-message">Авторизуйтесь через Steam, чтобы отправить сообщение оператору.</div>';
     return;
   }
   try {
     const rows = await api('/api/support/messages');
     $('#chatbody').innerHTML = rows.length
-      ? rows.map(item => `<div class="msg">${esc(item.message)}</div>`).join('')
-      : '<div class="empty">Начните диалог с поддержкой.</div>';
+      ? rows.map(item => `<div class="support-message">${esc(item.message)}</div>`).join('')
+      : `<div class="support-welcome">Как мы можем вам помочь с ${esc(S.brand)}?</div>`;
   } catch (error) {
     $('#chatbody').textContent = error.message;
   }
@@ -521,19 +637,117 @@ function go(page) {
   render();
 }
 function sideTab(tab) { S.tab = tab; render(); }
+function setProfileTab(tab) { S.profileTab = tab; render(); }
 function login() { S.authModal = true; render(); }
 function closeAuthModal() { S.authModal = false; render(); }
 function toggleConsent(type) {
   if (type === 'age') S.ageAccepted = !S.ageAccepted;
   if (type === 'terms') S.termsAccepted = !S.termsAccepted;
-  render();
+  const mark = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.2 3.1 3.1L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  for (const key of ['age', 'terms']) {
+    const button = document.querySelector(`[data-consent="${key}"]`);
+    const checked = key === 'age' ? S.ageAccepted : S.termsAccepted;
+    if (button) {
+      button.classList.toggle('checked', checked);
+      button.setAttribute('aria-checked', String(checked));
+      button.innerHTML = checked ? mark : '';
+    }
+  }
+  const submit = document.querySelector('[data-auth-submit]');
+  if (submit) submit.disabled = !(S.ageAccepted && S.termsAccepted);
 }
 function confirmSteamLogin() {
   if (!S.ageAccepted || !S.termsAccepted) return;
   location.href = '/auth/steam';
 }
 async function logout() { await api('/auth/logout', { method: 'POST' }); location.reload(); }
-function openChat() { S.chat = true; render(); }
+async function openSettings() {
+  try {
+    S.settings = await api('/api/settings');
+    S.settingsOpen = true;
+    render();
+  } catch (error) { toast(error.message); }
+}
+function closeSettings() { S.settingsOpen = false; render(); }
+function selectPrivacy(value) {
+  if (!S.settings) return;
+  S.settings.privacy = value;
+  for (const option of document.querySelectorAll?.('[data-privacy]') || []) {
+    option.classList.toggle('active', option.dataset.privacy === value);
+  }
+}
+function toggleStreamerMode() {
+  if (!S.settings) return;
+  S.settings.streamerMode = !S.settings.streamerMode;
+  const button = document.querySelector('.settings-switch');
+  if (button) {
+    button.classList.toggle('active', S.settings.streamerMode);
+    button.setAttribute('aria-pressed', String(S.settings.streamerMode));
+  }
+}
+async function copyTradeLink() {
+  const value = document.querySelector('#settings-trade')?.value || '';
+  if (!value) return toast('Сначала вставьте трейд-ссылку');
+  try { await navigator.clipboard.writeText(value); toast('Трейд-ссылка скопирована'); }
+  catch { toast('Не удалось скопировать ссылку'); }
+}
+async function saveSettings() {
+  if (!S.settings) return;
+  const nickname = document.querySelector('#settings-nickname')?.value?.trim() || '';
+  const tradeLink = document.querySelector('#settings-trade')?.value?.trim() || '';
+  try {
+    const saved = await api('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname, tradeLink, privacy: S.settings.privacy, streamerMode: S.settings.streamerMode })
+    });
+    S.settings = saved;
+    if (S.me?.user) S.me.user.name = saved.nickname;
+    if (S.profile?.user) S.profile.user.name = saved.nickname;
+    S.settingsOpen = false;
+    render();
+    toast('Настройки сохранены');
+  } catch (error) { toast(error.message); }
+}
+function openPayment() { S.paymentOpen = true; render(); }
+function closePayment() { S.paymentOpen = false; render(); }
+function setPaymentTab(tab) { S.paymentTab = tab; S.paymentMethod = 0; render(); }
+function selectPaymentMethod(index) { S.paymentMethod = Number(index); render(); }
+function setPaymentAmount(amount) { S.paymentAmount = Number(amount); render(); }
+function applyPaymentPromo() {
+  const code = document.querySelector('#payment-promo')?.value?.trim() || '';
+  toast(code ? 'Промокод будет проверен платёжным провайдером' : 'Введите промокод');
+}
+function submitPayment() {
+  const amount = Number(document.querySelector('#payment-amount')?.value || S.paymentAmount);
+  if (!Number.isFinite(amount) || amount < 50) return toast('Минимальная сумма пополнения — 50 ₽');
+  toast('Платёжный провайдер пока не подключён');
+}
+async function openChat() {
+  try {
+    const contact = await api('/api/support/contact');
+    const localEmail = typeof localStorage !== 'undefined' ? (localStorage.getItem('keyser-support-email') || '') : '';
+    S.chatEmail = contact.email || localEmail;
+    S.chatEmailReady = !!S.chatEmail;
+  } catch {
+    S.chatEmail = '';
+    S.chatEmailReady = false;
+  }
+  S.chat = true;
+  render();
+}
+async function submitSupportEmail() {
+  const email = document.querySelector('#support-email')?.value?.trim().toLowerCase() || '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(email)) return toast('Введите корректный email');
+  try {
+    if (S.me?.authenticated) await api('/api/support/contact', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+    });
+    if (typeof localStorage !== 'undefined') localStorage.setItem('keyser-support-email', email);
+    S.chatEmail = email;
+    S.chatEmailReady = true;
+    render();
+  } catch (error) { toast(error.message); }
+}
 function closeChat() { S.chat = false; render(); }
 function toast(text) {
   const root = $('#toast-root');
@@ -542,7 +756,10 @@ function toast(text) {
 }
 
 Object.assign(window, {
-  go, sideTab, choose, setBoost, sendToUpgrade, sellItem, selectCase, openCase, upgrade,
-  login, closeAuthModal, toggleConsent, confirmSteamLogin, logout, openChat, closeChat, sendChat
+  go, sideTab, setProfileTab, choose, setBoost, applyTargetFilters, sendToUpgrade, sellItem, selectCase, openCase, upgrade,
+  login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
+  openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
+  openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
+  openChat, submitSupportEmail, closeChat, sendChat
 });
 boot();

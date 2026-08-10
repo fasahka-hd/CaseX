@@ -4,6 +4,19 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+
+// Load only safe runtime values needed by the server. BASE_URL is intentionally
+// resolved from the current request unless it is supplied by the host process.
+try {
+  const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT']);
+  for (const line of localEnv.split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (!match || !allowed.has(match[1]) || process.env[match[1]]) continue;
+    process.env[match[1]] = match[2].trim().replace(/^['"]|['"]$/g, '');
+  }
+} catch {}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -194,6 +207,11 @@ ensureColumn('live_drops', 'rarity', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('live_drops', 'rarity_color', "TEXT NOT NULL DEFAULT '#74ffca'");
 ensureColumn('live_drops', 'rarity_rank', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('live_drops', 'source', "TEXT NOT NULL DEFAULT 'case'");
+ensureColumn('users', 'trade_link', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'profile_privacy', "TEXT NOT NULL DEFAULT 'private'");
+ensureColumn('users', 'streamer_mode', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'nickname_custom', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'support_email', "TEXT NOT NULL DEFAULT ''");
 
 const clients = new Set();
 function cleanSessions() { db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()); }
@@ -269,18 +287,38 @@ async function verifySteam(req) {
   if (!match) throw new Error('SteamID not found');
   return match[1];
 }
+function decodeXml(value = '') {
+  return String(value).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+function xmlValue(xml, tag) {
+  const match = String(xml).match(new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i'));
+  return match ? decodeXml(match[1].trim()) : '';
+}
 async function steamProfile(id) {
-  if (!STEAM_API_KEY) return { name: `Steam ${id.slice(-6)}`, avatar: '' };
-  try {
-    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');
-    url.searchParams.set('key', STEAM_API_KEY);
-    url.searchParams.set('steamids', id);
-    const response = await fetch(url);
-    const profile = response.ok ? (await response.json())?.response?.players?.[0] : null;
-    return { name: profile?.personaname || `Steam ${id.slice(-6)}`, avatar: profile?.avatarfull || '' };
-  } catch {
-    return { name: `Steam ${id.slice(-6)}`, avatar: '' };
+  if (STEAM_API_KEY) {
+    try {
+      const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');
+      url.searchParams.set('key', STEAM_API_KEY);
+      url.searchParams.set('steamids', id);
+      const response = await fetch(url, { headers: { 'User-Agent': 'Keyser/2.0' } });
+      const profile = response.ok ? (await response.json())?.response?.players?.[0] : null;
+      if (profile?.personaname || profile?.avatarfull) {
+        return { name: profile.personaname || `Steam ${id.slice(-6)}`, avatar: profile.avatarfull || '' };
+      }
+    } catch {}
   }
+  try {
+    const response = await fetch(`https://steamcommunity.com/profiles/${id}/?xml=1`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Keyser/2.0)' }
+    });
+    if (response.ok) {
+      const xml = await response.text();
+      const name = xmlValue(xml, 'steamID');
+      const avatar = xmlValue(xml, 'avatarFull') || xmlValue(xml, 'avatarMedium');
+      if (name || avatar) return { name: name || `Steam ${id.slice(-6)}`, avatar };
+    }
+  } catch {}
+  return { name: `Steam ${id.slice(-6)}`, avatar: '' };
 }
 function publicCatalogItem(item) {
   return { ...item };
@@ -364,7 +402,7 @@ app.get('/auth/steam/callback', async (req, res) => {
     let userId;
     if (old) {
       db.prepare('UPDATE users SET name = ?, avatar = ?, updated_at = ? WHERE id = ?')
-        .run(profile.name, profile.avatar, now, old.id);
+        .run(old.nickname_custom ? old.name : profile.name, profile.avatar, now, old.id);
       userId = old.id;
     } else {
       userId = Number(db.prepare('INSERT INTO users(steamid,name,avatar,created_at,updated_at) VALUES(?,?,?,?,?)')
@@ -398,9 +436,25 @@ app.post('/auth/logout', (req, res) => {
 });
 
 app.get('/api/config', (_, res) => res.json({ brand: BRAND_NAME, telegram: TELEGRAM_URL }));
-app.get('/api/me', (req, res) => {
-  const account = currentUser(req);
+app.get('/api/stats', (_, res) => {
+  res.json({
+    totalPlayers: db.prepare('SELECT COUNT(*) AS count FROM users').get().count,
+    casesOpened: db.prepare('SELECT COUNT(*) AS count FROM case_openings').get().count,
+    upgradesMade: db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds').get().count
+  });
+});
+app.get('/api/me', async (req, res) => {
+  let account = currentUser(req);
   if (!account) return res.json({ authenticated: false });
+  if (!account.avatar || /^Steam \d{6}$/.test(account.name)) {
+    const fresh = await steamProfile(account.steamid);
+    if (fresh.avatar || !/^Steam \d{6}$/.test(fresh.name)) {
+      const displayName = account.nickname_custom ? account.name : fresh.name;
+      db.prepare('UPDATE users SET name = ?, avatar = ?, updated_at = ? WHERE id = ?')
+        .run(displayName, fresh.avatar, Date.now(), account.id);
+      account = { ...account, name: displayName, avatar: fresh.avatar };
+    }
+  }
   res.json({
     authenticated: true,
     user: {
@@ -408,6 +462,68 @@ app.get('/api/me', (req, res) => {
       avatar: account.avatar, balanceCents: account.balance_cents
     }
   });
+});
+app.get('/api/profile', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const bestDrop = db.prepare(`
+    SELECT id AS assetid, catalog_id AS catalogId, item_name AS name,
+      weapon_name AS weapon, skin_name AS skin, item_icon AS icon,
+      price_cents AS priceCents, rarity, rarity_color AS rarityColor,
+      rarity_rank AS rarityRank, source, created_at AS createdAt
+    FROM site_inventory WHERE user_id = ? ORDER BY price_cents DESC, id DESC LIMIT 1
+  `).get(account.id) || null;
+  const casesOpened = db.prepare('SELECT COUNT(*) AS count FROM case_openings WHERE user_id = ?').get(account.id).count;
+  const upgradesMade = db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds WHERE user_id = ?').get(account.id).count;
+  const sold = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents),0) AS total FROM inventory_sales WHERE user_id = ?').get(account.id);
+  const activeItems = db.prepare("SELECT COUNT(*) AS count FROM site_inventory WHERE user_id = ? AND status = 'active'").get(account.id).count;
+  res.json({
+    user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar },
+    balanceCents: account.balance_cents,
+    withdrawnCents: 0,
+    activeItems,
+    bestDrop: bestDrop ? { ...bestDrop, assetid: String(bestDrop.assetid) } : null,
+    stats: { casesOpened, upgradesMade, soldItems: sold.count, soldCents: sold.total }
+  });
+});
+app.get('/api/settings', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  res.json({
+    nickname: account.name,
+    tradeLink: account.trade_link || '',
+    privacy: account.profile_privacy || 'private',
+    streamerMode: !!account.streamer_mode
+  });
+});
+app.post('/api/settings', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const nickname = String(req.body?.nickname || '').trim();
+  const tradeLink = String(req.body?.tradeLink || '').trim();
+  const privacy = String(req.body?.privacy || 'private');
+  const streamerMode = !!req.body?.streamerMode;
+  if (nickname.length < 2 || nickname.length > 32 || /[<>\r\n]/.test(nickname)) {
+    return res.status(400).json({ error: 'Никнейм должен содержать от 2 до 32 символов' });
+  }
+  if (!['private', 'friends', 'public'].includes(privacy)) {
+    return res.status(400).json({ error: 'Некорректная настройка приватности' });
+  }
+  if (tradeLink) {
+    try {
+      const url = new URL(tradeLink);
+      if (!/(^|\.)steamcommunity\.com$/i.test(url.hostname) || !url.pathname.startsWith('/tradeoffer/new')) {
+        throw new Error('invalid');
+      }
+    } catch {
+      return res.status(400).json({ error: 'Введите корректную Steam трейд-ссылку' });
+    }
+  }
+  db.prepare(`
+    UPDATE users SET name = ?, trade_link = ?, profile_privacy = ?,
+      streamer_mode = ?, nickname_custom = 1, updated_at = ? WHERE id = ?
+  `).run(nickname, tradeLink, privacy, streamerMode ? 1 : 0, Date.now(), account.id);
+  res.json({ ok: true, nickname, tradeLink, privacy, streamerMode });
 });
 app.get('/api/catalog', (_, res) => res.json(CATALOG.map(publicCatalogItem)));
 app.get('/api/inventory', (req, res) => {
@@ -546,6 +662,21 @@ app.get('/api/events', (req, res) => {
 });
 app.get('/api/online', (_, res) => res.json({ online: clients.size }));
 
+app.get('/api/support/contact', (req, res) => {
+  const account = currentUser(req);
+  res.json({ authenticated: !!account, email: account?.support_email || '' });
+});
+app.post('/api/support/contact', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(email) || email.length > 160) {
+    return res.status(400).json({ error: 'Введите корректный email' });
+  }
+  db.prepare('UPDATE users SET support_email = ?, updated_at = ? WHERE id = ?')
+    .run(email, Date.now(), account.id);
+  res.json({ ok: true, email });
+});
 app.get('/api/support/messages', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'login_required' });
