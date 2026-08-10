@@ -1,7 +1,6 @@
 {
-  "name": "ggdrop-full",
+  "name": "ggdrop-exact",
   "version": "1.0.0",
-  "description": "GGDROP - Full standalone project with fake API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
