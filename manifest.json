@@ -1,15 +1,21 @@
 {
     "short_name": "GGDROP",
-    "name": "GGDROP",
+    "name": "GGDROP — кейсы CS2",
     "start_url": ".",
     "display": "standalone",
-    "theme_color": "#f3a45d",
-    "background_color": "#17171f",
+    "theme_color": "#070b0f",
+    "background_color": "#070b0f",
     "icons": [
         {
             "src": "/favicons/favicon-32x32.png",
             "type": "image/png",
             "sizes": "32x32",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/favicons/android-chrome-192x192.png",
+            "type": "image/png",
+            "sizes": "192x192",
             "purpose": "any maskable"
         },
         {
@@ -22,12 +28,6 @@
             "src": "/favicons/apple-touch-icon-152x152.png",
             "type": "image/png",
             "sizes": "152x152",
-            "purpose": "any maskable"
-        },
-        {
-            "src": "/favicons/android-chrome-192x192.png",
-            "type": "image/png",
-            "sizes": "192x192",
             "purpose": "any maskable"
         }
     ]
