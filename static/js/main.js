@@ -1,10 +1,11 @@
 const S = {
   page: 'upgrade', me: null, inventory: [], catalog: [], cases: [], drops: [], online: 0,
   tab: 'inventory', from: null, to: null, chance: null, boost: 30, addBalance: 0, turbo: false, spinning: false,
-  opening: null, activeCase: null, rouletteItems: [], caseResult: null,
+  opening: null, activeCase: null, rouletteItems: [], caseResult: null, upgradeResult: null, caseReveal: false, pointerAngle: 0,
   authModal: false, ageAccepted: false, termsAccepted: false,
   profile: null, profileTab: 'items', settingsOpen: false, settings: null,
   paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0, paymentCurrency: 'RUB', currencyOpen: false,
+  sellMode: false, sellSelected: new Set(), sortBy: 'new', sortOpen: false,
   targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
   footerLang: 'RU', footerLangOpen: false,
   globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
@@ -28,6 +29,13 @@ const LANGS = [
   { code: 'KZ', name: 'Қазақша', flag: '🇰🇿' },
   { code: 'BY', name: 'Беларуская', flag: '🇧🇾' }
 ];
+const FLAG_CODES = { RU: 'ru', EN: 'gb', UA: 'ua', KZ: 'kz', BY: 'by' };
+function flagIcon(code) {
+  const lang = LANGS.find(item => item.code === code);
+  const emoji = lang ? lang.flag : '';
+  const cc = FLAG_CODES[code] || String(code || '').toLowerCase();
+  return `<span class="lang-flag" data-emoji="${emoji}"><img src="https://flagcdn.com/w40/${cc}.png" alt="${esc(code)}" loading="lazy" onerror="var f=this.parentElement;if(f)f.textContent=f.dataset.emoji||'';"></span>`;
+}
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, match => ({
@@ -35,16 +43,21 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, match => ({
 }[match]));
 const money = cents => cents == null
   ? '—'
-  : (Number(cents) / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽';
+  : (Number(cents) / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const coinImg = '<img class="coin-mini" src="/chunks/coin.svg" alt="">';
+const coinPrice = cents => cents == null ? '—' : `${money(cents)}${coinImg}`;
 const safeColor = value => /^#[0-9a-f]{6}$/i.test(String(value || '')) ? value : '#74ffca';
 const rarityStyle = item => `style="--rarity:${safeColor(item?.rarityColor)}"`;
-const image = (src, alt = '') => src
-  ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" onerror="this.remove()">`
+const bust = src => (typeof src === 'string' && src.includes('/static/items/') && !src.includes('?'))
+  ? `${src}?v=2`
+  : src;
+const image = (src, alt = '', local = '') => src
+  ? `<img src="${esc(bust(src))}" alt="${esc(alt)}" loading="lazy" decoding="async"${local ? ` data-fb="${esc(bust(local))}"` : ''} onerror="if(this.dataset.fb){const fb=this.dataset.fb;this.dataset.fb='';this.onerror=null;this.src=fb}else{this.onerror=null;this.classList.add('img-failed')}">`
   : '';
 const avatarImage = user => user?.avatar
   ? `<img src="${esc(user.avatar)}" alt="${esc(user.name || 'Профиль')}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
   : '<img src="/chunks/logo.svg" alt="Профиль">';
-const art = item => `<div class="art" ${rarityStyle(item)}>${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '')}</div>`;
+const art = item => `<div class="art" ${rarityStyle(item)}>${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '', item?.localIcon || '')}</div>`;
 
 function coinIcon(size = '1.6rem', color = '#FFA800') {
   return `<svg class="coin-icon" style="width:${size};height:${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -81,6 +94,15 @@ async function api(url, options) {
   return json;
 }
 
+function shuffleCatalog(list) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 async function boot() {
   try {
     const [config, me, drops, online, catalog, cases, stats] = await Promise.all([
@@ -92,7 +114,7 @@ async function boot() {
     S.me = me;
     S.drops = drops;
     S.online = online.online;
-    S.catalog = catalog;
+    S.catalog = shuffleCatalog(catalog);
     S.cases = cases.cases || [];
     S.globalStats = stats;
     S.turbo = localStorage.getItem('keyser-turbo') === '1';
@@ -103,11 +125,30 @@ async function boot() {
     }
     render();
     listen();
+    preloadArtwork();
   } catch (error) {
     console.error(error);
     render();
     toast('Не удалось загрузить данные', 'error');
   }
+}
+
+function preloadArtwork() {
+  const urls = [];
+  for (const item of (S.catalog || []).slice(0, 72)) if (item.icon) urls.push(bust(item.icon));
+  for (const item of S.inventory || []) if (item.icon || item.itemIcon) urls.push(bust(item.icon || item.itemIcon));
+  const seen = new Set();
+  const unique = urls.filter(url => (seen.has(url) ? false : (seen.add(url), true)));
+  let index = 0;
+  const batch = () => {
+    const end = Math.min(index + 6, unique.length);
+    for (; index < end; index++) {
+      const im = new Image();
+      im.src = unique[index];
+    }
+    if (index < unique.length) setTimeout(batch, 120);
+  };
+  setTimeout(batch, 400);
 }
 
 function listen() {
@@ -123,9 +164,11 @@ function listen() {
     if (S.page === 'rewards' || S.page === 'upgrade') render();
   });
   document.addEventListener('click', event => {
+    if (!document.body.contains(event.target)) return;
     let changed = false;
     if (!event.target.closest('.footer-language') && S.footerLangOpen) { S.footerLangOpen = false; changed = true; }
     if (!event.target.closest('.currency-select') && S.currencyOpen) { S.currencyOpen = false; changed = true; }
+    if (!event.target.closest('.profile-sort') && S.sortOpen) { S.sortOpen = false; changed = true; }
     if (changed) render();
   });
 }
@@ -152,12 +195,11 @@ function onlineIcon() {
 }
 
 function header() {
-  const balance = S.me?.authenticated ? money(S.me.user.balanceCents) : null;
+  const balance = S.me?.authenticated ? coinPrice(S.me.user.balanceCents) : null;
   return `<header class="top">
     <div class="brand"><img src="/chunks/logo.svg" alt=""><span>${esc(S.brand)}</span></div>
     <nav class="nav">
       <button class="${S.page === 'cases' || S.page === 'case' ? 'active' : ''}" onclick="go('cases')">КЕЙСЫ</button>
-      <button class="${S.page === 'inventory' ? 'active' : ''}" onclick="go('inventory')">ИНВЕНТАРЬ</button>
       <button class="${S.page === 'upgrade' ? 'active' : ''}" onclick="go('upgrade')">АПГРЕЙДЫ</button>
       <button class="${S.page === 'rewards' ? 'active' : ''}" onclick="go('rewards')">НАГРАДЫ</button>
       <button class="${S.page === 'steal' ? 'active' : ''}" onclick="go('steal')">STEAL</button>
@@ -173,15 +215,21 @@ function header() {
 }
 
 function sideItem(item) {
+  const player = S.me?.user;
+  const avatar = player?.avatar
+    ? `<img src="${esc(player.avatar)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
+    : '<img src="/chunks/logo.svg" alt="">';
   return `<div class="side-item skin-item" ${rarityStyle(item)}>
     ${art(item)}
     <div class="side-item-copy">
-      <b class="side-price">${money(item.priceCents)}</b>
-      ${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}
-      <div class="item-name">${esc(item.weapon || item.name)}</div>
+      <div class="item-name-row">
+        <span class="item-name">${esc(item.weapon || item.name)}</span>
+        ${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}
+      </div>
       <div class="item-skin">${esc(item.skin || item.marketName)}</div>
       <div class="item-rarity">${esc(item.rarity)}</div>
     </div>
+    <div class="side-player">${avatar}<span>${esc(player?.name || 'Игрок')}</span></div>
     <i class="skin-rarity-line"></i>
   </div>`;
 }
@@ -211,7 +259,7 @@ function sidebar() {
 }
 
 function priceTag(item) {
-  return `<span class="skin-price">${money(item.priceCents)}</span>`;
+  return `<span class="skin-price">${coinPrice(item.priceCents)}</span>`;
 }
 function rarityLine() {
   return '<i class="skin-rarity-line"></i>';
@@ -237,12 +285,12 @@ function pickCard(item, side) {
 }
 function bigSelected(item) {
   return `<div class="selected-big skin-item" ${rarityStyle(item)}>
-    <div class="selected-big-art">${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '')}</div>
+    <div class="selected-big-art">${image(item?.icon || item?.itemIcon, item?.name || item?.itemName || '', item?.localIcon || '')}</div>
     <div class="selected-big-info">
       <strong>${esc(item.weapon || item.name)}</strong>
       <span>${esc(item.skin || item.marketName || '')}</span>
       <small>${esc(item.rarity || '')}</small>
-      <div class="selected-big-price"><b>${money(item.priceCents)}</b>${item.wear ? `<em>${esc(item.wear)}</em>` : ''}</div>
+      <div class="selected-big-price"><b>${coinPrice(item.priceCents)}</b>${item.wear ? `<em>${esc(item.wear)}</em>` : ''}</div>
     </div>
   </div>`;
 }
@@ -257,17 +305,17 @@ function upgradePage() {
   if (!S.me?.authenticated) return loginRequired('АПГРЕЙДЫ', 'Войдите в аккаунт. Для апгрейда используются только предметы из инвентаря сайта.');
   const inventory = S.inventory;
   const baseValue = (S.from ? Number(S.from.priceCents) : 0) + S.addBalance;
-  const minimumPrice = S.from ? Math.ceil(baseValue * (1 + S.boost / 100)) : 0;
+  const minimumPrice = S.from ? boostMinimumPrice(baseValue, S.boost) : 0;
   const query = S.targetSearch.trim().toLowerCase();
   const minTarget = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
   const maxTarget = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
   const targets = S.catalog.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
-  const pageSize = 12;
+  const pageSize = 16;
   let pageCount = Math.max(1, Math.ceil(targets.length / pageSize));
   if (S.targetPage > pageCount) S.targetPage = pageCount;
   const pageTargets = targets.slice((S.targetPage - 1) * pageSize, S.targetPage * pageSize);
   const chance = S.chance == null ? 0 : S.chance;
-  const boostOptions = [['x2', 200], ['x5', 500], ['x10', 1000], ['30%', 30], ['50%', 50], ['75%', 75]];
+  const boostOptions = [['30%', 30], ['50%', 50], ['75%', 75], ['x2', 200], ['x5', 500], ['x10', 1000]];
   const boostButtons = boostOptions.map(([label, value]) => `<button class="${S.boost === value ? 'active' : ''}" ${S.from ? '' : 'disabled'} onclick="setBoost(${value})">${label}</button>`).join('');
   const balanceCents = Number(S.me.user.balanceCents || 0);
   const balanceR = (balanceCents / 100).toFixed(2);
@@ -296,9 +344,14 @@ function upgradePage() {
       </div>
       <div class="wheelbox">
         <div class="wheelhead"><span>ШАНС АПГРЕЙДА</span><b>${chance}%</b></div>
-        <div class="wheel-stage"><div class="wheel ${S.spinning ? 'spin' : ''}" style="--chance:${chance}%;--chance-half:${chance / 2}%;--angle:${S.spinning ? (turboOn ? '720deg' : '1440deg') : '0deg'}">
-          <img class="wheel-logo" src="/chunks/logo.svg" alt=""><div class="wheelcenter"><strong>${chance}%</strong><span>${chance ? 'расчёт по стоимости' : 'выберите предметы'}</span></div>
-        </div><i class="pointer" aria-hidden="true"></i></div>
+        <div class="wheel-stage"><div class="wheel" style="--chance:${chance}%;--chance-half:${chance / 2}%">
+          <img class="spinner-ring spinner-ring-2" src="/chunks/spinner-group-2.webp" alt="" aria-hidden="true">
+          <img class="spinner-ring spinner-ring-1" src="/chunks/spinner-group-1.webp" alt="" aria-hidden="true">
+          <span class="wheel-tick tick-100">100%</span><span class="wheel-tick tick-0">0%</span><span class="wheel-tick tick-50l">50%</span><span class="wheel-tick tick-50r">50%</span>
+          <img class="spinner-center" src="/chunks/spinner-group-3.webp" alt="" aria-hidden="true">
+          <img class="spinner-logo" src="/chunks/logo.svg" alt="" aria-hidden="true">
+          <div class="wheelcenter"><strong>${chance ? Number(chance).toFixed(2) + '%' : '0%'}</strong><span>${chance ? 'Средний шанс' : 'выберите предметы'}</span></div>
+        </div><div class="pointer-orbit" style="--angle:${Number(S.pointerAngle) || 0}deg" aria-hidden="true"><img class="pointer" src="/chunks/spinner-arrow.webp" alt=""></div></div>
         <button class="upgrade" ${!S.from || !S.to || S.spinning ? 'disabled' : ''} onclick="upgrade()">
           <img class="upgrade-icon" src="/chunks/upgrade.svg" alt="">${S.spinning ? 'АПГРЕЙД...' : 'АПГРЕЙД'}
         </button>
@@ -313,11 +366,62 @@ function upgradePage() {
     </section>
     <section class="lower upgrade-lists">
       <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/inventary.svg" alt=""><b>МОИ ПРЕДМЕТЫ</b></div></div><div class="upgrade-list-body">${inventory.length ? `<div class="grid upgrade-items-grid">${inventory.map(item => skinCard(item, { button: true, onclick: `choose('${item.assetid}','from')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Ваш инвентарь пуст</strong><span>Открой свой первый кейс</span><button onclick="go(\'cases\')"><img src="/chunks/cases.svg" alt="">ОТКРЫТЬ КЕЙС</button></div>'}</div></div>
-      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск" oninput="applyTargetFilters()"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${pageTargets.length ? `<div class="grid upgrade-items-grid target-items-grid">${pageTargets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}${pageCount > 1 ? `<div class="target-pager"><button ${S.targetPage <= 1 ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage - 1})" aria-label="Предыдущая страница">‹</button><span>${S.targetPage} / ${pageCount}</span><button ${S.targetPage >= pageCount ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage + 1})" aria-label="Следующая страница">›</button></div>` : ''}</div></div>
+      <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск" oninput="applyTargetFilters()"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${pageTargets.length ? `<div class="grid upgrade-items-grid target-items-grid">${pageTargets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}${pageCount > 1 ? `<div class="target-pager"><button ${S.targetPage <= 1 ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage - 1})" aria-label="Предыдущая страница">‹</button><button ${S.targetPage >= pageCount ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage + 1})" aria-label="Следующая страница">›</button></div>` : ''}</div></div>
     </section>`;
 }
 function inventoryItemCard(item) {
-  return `<div class="inventory-item-wrap">${skinCard(item)}<div class="inventory-actions"><button class="sell-item" onclick="sellItem('${item.assetid}')">ПРОДАТЬ ${money(item.priceCents)}</button><button class="upgrade-item" onclick="sendToUpgrade('${item.assetid}')">В АПГРЕЙД</button></div></div>`;
+  const selected = S.sellMode && S.sellSelected.has(String(item.assetid));
+  const selectable = S.sellMode
+    ? `<button class="sell-check ${selected ? 'on' : ''}" onclick="toggleSellItem('${item.assetid}')" aria-label="Выбрать предмет">${selected ? '✓' : ''}</button>`
+    : '';
+  return `<div class="inventory-item-wrap ${S.sellMode ? 'sell-mode' : ''} ${selected ? 'sell-picked' : ''}">${selectable}${skinCard(item, S.sellMode ? { onclick: `toggleSellItem('${item.assetid}')` } : {})}<div class="inventory-actions"><button class="sell-item" onclick="sellItem('${item.assetid}')">ПРОДАТЬ ${money(item.priceCents)}</button><button class="upgrade-item" onclick="sendToUpgrade('${item.assetid}')">В АПГРЕЙД</button></div></div>`;
+}
+function sellBar() {
+  if (!S.sellMode) return '';
+  const count = S.sellSelected.size;
+  const total = S.inventory.filter(item => S.sellSelected.has(String(item.assetid))).reduce((sum, item) => sum + Number(item.priceCents || 0), 0);
+  return `<div class="sell-bar">
+    <button class="sell-bar-all" onclick="sellSelectAll()">${count === S.inventory.length ? 'СНЯТЬ ВСЕ' : 'ВЫБРАТЬ ВСЕ'}</button>
+    <span class="sell-bar-info">Выбрано: <b>${count}</b> на <b>${coinPrice(total)}</b></span>
+    <button class="sell-bar-confirm" ${count ? '' : 'disabled'} onclick="sellSelectedItems()">ПРОДАТЬ ВЫБРАННЫЕ</button>
+  </div>`;
+}
+function toggleSellMode() {
+  S.sellMode = !S.sellMode;
+  S.sellSelected.clear();
+  render();
+}
+function toggleSellItem(id) {
+  const key = String(id);
+  if (S.sellSelected.has(key)) S.sellSelected.delete(key);
+  else S.sellSelected.add(key);
+  render();
+}
+function sellSelectAll() {
+  if (S.sellSelected.size === S.inventory.length) S.sellSelected.clear();
+  else S.inventory.forEach(item => S.sellSelected.add(String(item.assetid)));
+  render();
+}
+async function sellSelectedItems() {
+  if (!S.sellSelected.size) return;
+  const items = S.inventory.filter(item => S.sellSelected.has(String(item.assetid)));
+  const total = items.reduce((sum, item) => sum + Number(item.priceCents || 0), 0);
+  if (!confirm(`Продать выбранные предметы (${items.length} шт.) за ${money(total)}?`)) return;
+  let sold = 0;
+  let amount = 0;
+  for (const item of items) {
+    try {
+      const result = await api(`/api/inventory/${encodeURIComponent(item.assetid)}/sell`, { method: 'POST' });
+      sold++;
+      amount += Number(result.amountCents || 0);
+    } catch (error) { /* продолжаем */ }
+  }
+  S.sellMode = false;
+  S.sellSelected.clear();
+  await refreshAccount();
+  S.from = null; S.to = null; S.chance = null;
+  render();
+  toast(sold ? `Продано: ${sold} шт. на ${money(amount)}` : 'Не удалось продать', sold ? '' : 'error');
 }
 function inventoryPage() {
   if (!S.me?.authenticated) return loginRequired('ИНВЕНТАРЬ', 'Войдите через Steam, чтобы увидеть предметы, полученные на сайте. Steam-инвентарь сюда не загружается.');
@@ -337,7 +441,7 @@ function casesPage() {
   if (!S.me?.authenticated) return loginRequired('КЕЙСЫ', 'Войдите в аккаунт. Выпавшие скины будут сохранены в инвентаре сайта, а не в Steam.');
   return `<h1 class="page-title">Кейсы</h1><p class="sub">Выберите кейс. Содержимое и анимация открытия находятся на его странице.</p>
     <div class="case-shop-grid">${S.cases.map(caseData => `<article class="case-shop-card ${caseData.id === 'starter' ? 'starter-case' : ''}">
-      ${caseIcon(caseData)}<h2>${esc(caseData.name)}</h2><b>${caseData.priceCents ? money(caseData.priceCents) : 'БЕСПЛАТНО'}</b>
+      ${caseIcon(caseData)}<h2>${esc(caseData.name)}</h2><b>${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</b>
       <button onclick="selectCase('${esc(caseData.id)}')" ${!caseData.available ? 'disabled' : ''}>${caseData.available ? 'КУПИТЬ' : 'УЖЕ ОТКРЫТ'}</button>
     </article>`).join('')}</div>`;
 }
@@ -352,18 +456,18 @@ function caseDetailPage() {
   const disabled = !!S.opening || !caseData.available || insufficient;
   const missingCents = caseData.priceCents - Number(S.me.user.balanceCents);
   const buyButton = !insufficient
-    ? `<button class="case-buy-button" ${disabled ? 'disabled' : ''} onclick="openCase('${esc(caseData.id)}')">${S.opening ? 'ОТКРЫВАЕМ...' : !caseData.available ? 'УЖЕ ОТКРЫТ' : caseData.priceCents ? `КУПИТЬ ЗА ${money(caseData.priceCents)}` : 'КУПИТЬ БЕСПЛАТНО'}</button>`
+    ? `<button class="case-buy-button" ${disabled ? 'disabled' : ''} onclick="openCase('${esc(caseData.id)}')">${S.opening ? 'ОТКРЫВАЕМ...' : !caseData.available ? 'УЖЕ ОТКРЫТ' : caseData.priceCents ? `КУПИТЬ ЗА ${coinPrice(caseData.priceCents)}` : 'КУПИТЬ БЕСПЛАТНО'}</button>`
     : `<div class="insufficient-box">
         <div class="insufficient-head"><span>Не хватает</span><b>${money(missingCents)}</b>${coinIcon('2rem')}</div>
         <span class="insufficient-text">Недостаточно средств для открытия кейса</span>
         <button type="button" class="insufficient-btn" onclick="openPayment()">Пополнить баланс${plusIcon('2.2rem')}</button>
       </div>`;
   const roulette = S.rouletteItems.length ? `<div class="case-roulette"><i class="roulette-pointer"></i><div class="case-roll-track">${S.rouletteItems.map(rouletteCard).join('')}</div></div>` : '';
-  const result = S.caseResult ? `<div class="case-result"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button onclick="go('inventory')">В ИНВЕНТАРЬ</button></div>` : '';
+  const result = S.caseResult && !S.caseReveal ? `<div class="case-result"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button onclick="openInventory()">В ИНВЕНТАРЬ</button></div>` : '';
   return `<button class="case-back" onclick="go('cases')">← ВСЕ КЕЙСЫ</button>
     <section class="case-detail">
       <h1>${esc(caseData.name)}</h1>${caseIcon(caseData, true)}
-      <div class="case-detail-price">${caseData.priceCents ? money(caseData.priceCents) : 'БЕСПЛАТНО'}</div>
+      <div class="case-detail-price">${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</div>
       ${buyButton}
       ${roulette}${result}
       <div class="case-loot"><h2>СОДЕРЖИМОЕ</h2><div class="case-items case-items-detail">${caseContents(caseData)}</div></div>
@@ -374,7 +478,7 @@ function weeklySlot() {
   return `<div class="weekly-slot" aria-hidden="true"><img src="/chunks/question.svg" alt=""></div>`;
 }
 function topDropCard(drop) {
-  const item = { name: drop.itemName, weapon: String(drop.itemName).split(' | ')[0], skin: String(drop.itemName).split(' | ')[1] || '', icon: drop.itemIcon, priceCents: drop.priceCents, rarity: drop.rarity, rarityColor: drop.rarityColor };
+  const item = { name: drop.itemName, weapon: String(drop.itemName).split(' | ')[0], skin: String(drop.itemName).split(' | ')[1] || '', icon: drop.itemIcon, localIcon: drop.localIcon || '', priceCents: drop.priceCents, rarity: drop.rarity, rarityColor: drop.rarityColor };
   return `<div class="top-drop-card skin-item" ${rarityStyle(item)}>${priceTag(item)}${art(item)}<strong>${esc(item.weapon)}</strong><small>${esc(item.skin)}</small>${rarityLine()}</div>`;
 }
 function rewardsPage() {
@@ -409,38 +513,105 @@ function stealPage() {
 function profileEmptyState(title, subtitle, buttonText, action) {
   return `<div class="profile-tab-empty"><div class="pte-copy"><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/caseGreenIcon.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
 }
+function sortIconSVG() {
+  return '<svg class="profile-sort-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4v13M7 17l-3-3M7 17l3-3M17 20V7M17 7l-3 3M17 7l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+function profileSortButton() {
+  const options = [
+    ['new', 'По новизне'],
+    ['price-desc', 'По цене (дорогие)'],
+    ['price-asc', 'По цене (дешёвые)'],
+    ['rarity', 'По редкости']
+  ];
+  const label = (options.find(o => o[0] === S.sortBy) || options[0])[1];
+  return `<div class="profile-sort">
+    <button type="button" class="profile-sort-btn" onclick="toggleProfileSort(event)">${sortIconSVG()}<span>${esc(label)}</span><i class="profile-sort-chev ${S.sortOpen ? 'open' : ''}">${chevronIcon()}</i></button>
+    ${S.sortOpen ? `<div class="profile-sort-menu">${options.map(o => `<button type="button" class="${o[0] === S.sortBy ? 'active' : ''}" onclick="setProfileSort('${o[0]}')"><span>${esc(o[1])}</span>${o[0] === S.sortBy ? '<i>✓</i>' : ''}</button>`).join('')}</div>` : ''}
+  </div>`;
+}
+function sortList(list) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  if (S.sortBy === 'price-desc') return arr.sort((a, b) => Number(b.priceCents || 0) - Number(a.priceCents || 0));
+  if (S.sortBy === 'price-asc') return arr.sort((a, b) => Number(a.priceCents || 0) - Number(b.priceCents || 0));
+  if (S.sortBy === 'rarity') return arr.sort((a, b) => Number(b.rarityRank || 0) - Number(a.rarityRank || 0));
+  return arr;
+}
+function toggleProfileSort(event) {
+  event.stopPropagation();
+  S.sortOpen = !S.sortOpen;
+  render();
+}
+function setProfileSort(key) {
+  S.sortBy = key;
+  S.sortOpen = false;
+  render();
+}
+function historyCard(item) {
+  const status = item.status === 'sold' ? 'ПРОДАНО' : item.status === 'used' ? 'ИСПОЛЬЗОВАНО' : '';
+  const icon = item.icon || item.localIcon || '';
+  const img = icon ? `<img src="${esc(bust(icon))}" alt="" loading="lazy" onerror="this.onerror=null;this.classList.add('img-failed')">` : '';
+  return `<div class="profile-history-card skin-card" ${rarityStyle(item)}>
+    <div class="art">${img}</div>
+    <strong>${esc(item.weapon || item.name || '')}</strong>
+    <small>${esc(item.skin || '')}</small>
+    <span class="rarity-name">${esc(item.rarity || '')}</span>
+    ${status ? `<em class="history-status">${status}</em>` : ''}
+    <span class="skin-price">${coinPrice(item.priceCents)}</span>${rarityLine()}
+  </div>`;
+}
+function upgradeCard(row) {
+  const fromName = String(row.fromName || 'Предмет').split(' | ')[0];
+  const fromSkin = String(row.fromName || '').split(' | ')[1] || '';
+  const toName = String(row.toName || '').split(' | ')[0];
+  const toSkin = String(row.toName || '').split(' | ')[1] || '';
+  const won = !!row.won;
+  const icon = won ? (row.toIcon || '') : (row.fromIcon || '');
+  const img = icon ? `<img src="${esc(bust(icon))}" alt="" loading="lazy" onerror="this.onerror=null;this.classList.add('img-failed')">` : '';
+  const price = won ? row.toPriceCents : row.fromPriceCents;
+  return `<div class="profile-upgrade-card ${won ? 'won' : 'lost'}">
+    <div class="art">${img}</div>
+    <div class="upg-copy">
+      <strong>${esc(won ? toName : fromName)}</strong>
+      <small>${esc(won ? toSkin : fromSkin)}</small>
+      <span class="upg-chance">Шанс: ${Number(row.chance || 0).toFixed(1)}%</span>
+      <b>${coinPrice(price)}</b>
+    </div>
+    <em class="upg-result ${won ? 'ok' : 'no'}">${won ? 'УСПЕХ' : 'НЕ УДАЛОСЬ'}</em>
+  </div>`;
+}
 function profilePage() {
   if (!S.me?.authenticated) return loginRequired('ЛИЧНЫЙ ПРОФИЛЬ', 'Авторизуйтесь через Steam, чтобы открыть профиль.');
-  const profile = S.profile || { user: S.me.user, balanceCents: S.me.user.balanceCents, withdrawnCents: 0, activeItems: S.inventory.length, bestDrop: null, stats: {} };
+  const profile = S.profile || { user: S.me.user, balanceCents: S.me.user.balanceCents, withdrawnCents: 0, activeItems: S.inventory.length, bestDrop: null, stats: {}, history: [], upgrades: [] };
   const user = profile.user || S.me.user;
   const avatar = avatarImage(user);
   const best = profile.bestDrop
-    ? `<div class="profile-best-item">${skinCard(profile.bestDrop, { className: 'profile-best-skin' })}<span>Отобразился после лучшей игры</span></div>`
-    : '<div class="profile-best-empty"><div class="knife-silhouette">⌁</div><span>Отобразится<br>после первой игры</span></div>';
+    ? `<div class="profile-best-item">${skinCard(profile.bestDrop, { className: 'profile-best-skin' })}<span>Лучший предмет в инвентаре</span></div>`
+    : '<div class="profile-best-empty"><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""><span>Отобразится<br>после первой игры</span></div>';
   let content = '';
   if (S.profileTab === 'items') {
-    content = S.inventory.length ? `<div class="profile-items-grid">${S.inventory.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
+    const items = sortList(S.inventory);
+    content = items.length ? `${sellBar()}<div class="profile-items-grid">${items.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
   } else if (S.profileTab === 'history') {
-    const hasHistory = Number(profile.stats?.casesOpened || 0) + Number(profile.stats?.soldItems || 0) + Number(profile.stats?.upgradesMade || 0) > 0;
-    content = hasHistory
-      ? `<div class="profile-history"><div><b>${profile.stats?.casesOpened || 0}</b><span>Открыто кейсов</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продано предметов</span></div><div><b>${money(profile.stats?.soldCents || 0)}</b><span>Получено с продаж</span></div></div>`
-      : profileEmptyState('История предметов пуста', 'Открой свой первый кейс', 'Открыть кейс', "go('cases')");
+    const history = sortList(profile.history || []);
+    content = history.length ? `<div class="profile-items-grid profile-history-grid">${history.map(historyCard).join('')}</div>` : profileEmptyState('История предметов отсутствует', 'Откройте кейс или совершите апгрейд — результаты появятся здесь', 'Открыть кейс', "go('cases')");
   } else {
-    content = Number(profile.stats?.upgradesMade || 0) > 0
-      ? `<div class="profile-history"><div><b>${profile.stats.upgradesMade}</b><span>Всего апгрейдов</span></div><div><b>${profile.bestDrop ? money(profile.bestDrop.priceCents) : '—'}</b><span>Лучший результат</span></div></div>`
-      : profileEmptyState('История апгрейдов пуста', 'У пользователя пока нет завершенных апгрейдов', 'История пуста', "go('upgrade')");
+    const upgrades = (profile.upgrades || []).slice();
+    content = upgrades.length ? `<div class="profile-upgrades-grid">${upgrades.map(upgradeCard).join('')}</div>` : profileEmptyState('История апгрейдов пуста', 'У пользователя пока нет завершенных апгрейдов', 'Перейти к апгрейду', "go('upgrade')");
   }
+  const sellBtn = S.sellMode
+    ? '<button class="profile-sell-all sell-cancel" onclick="toggleSellMode()">ОТМЕНА</button>'
+    : '<button class="profile-sell-all" onclick="toggleSellMode()">ПРОДАТЬ ВСЕ</button>';
   return `<section class="profile-page">
     <div class="profile-summary-grid">
       <article class="profile-user-card">
         <div class="profile-identity">${avatar}<div><h1>${esc(user.name || 'Игрок')}</h1><span>ID: ${esc(user.steamid || user.id || '')}</span></div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid || '')}" target="_blank" rel="noopener" aria-label="Steam">${steamIcon()}</a><button onclick="openSettings()" title="Настройки"><img src="/chunks/settingIcon.svg" alt="Настройки"></button><button onclick="logout()" title="Выйти"><img src="/chunks/exitIconGray.svg" alt="Выйти"></button></div></div>
-        <div class="profile-balance-label">Баланс</div><div class="profile-balance"><strong>${money(profile.balanceCents)}</strong><button type="button" onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>
+        <div class="profile-balance-label">Баланс</div><div class="profile-balance"><strong>${coinPrice(profile.balanceCents)}</strong><button type="button" onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>
         <div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened || 0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade || 0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продажи</span></div></div>
       </article>
       <article class="profile-best-card"><h2>Лучший дроп</h2>${best}</article>
-      <div class="profile-side-column"><article class="profile-withdraw"><span>Выведено</span><strong>${money(profile.withdrawnCents)}</strong><b>${profile.activeItems || 0} предмета</b></article><article class="profile-coupon"><input placeholder="Персональный купон"><button>ПРИМЕНИТЬ</button></article></div>
+      <div class="profile-side-column"><article class="profile-withdraw"><span class="withdrawn-label">Выведено</span><div class="withdrawn-amount"><b>${(Number(profile.withdrawnCents || 0) / 100).toFixed(2)}</b><img src="/chunks/coin.svg" alt="₽"></div><span class="withdrawn-count">${profile.activeItems || 0} предмета</span><img class="withdrawn-bg" src="/chunks/steamBg.webp" alt="" aria-hidden="true"></article><article class="profile-coupon"><input placeholder="Персональный купон"><button>ПРИМЕНИТЬ</button></article></div>
     </div>
-    <div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab === 'items' ? 'active' : ''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab === 'history' ? 'active' : ''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab === 'upgrades' ? 'active' : ''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div>${S.profileTab === 'items' ? '<button class="profile-sell-all" onclick="toast(\'Выберите предмет для продажи\')">ПРОДАТЬ ВСЕ</button>' : ''}</div>
+    <div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab === 'items' ? 'active' : ''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab === 'history' ? 'active' : ''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab === 'upgrades' ? 'active' : ''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div><div class="profile-toolbar-right">${profileSortButton()}${sellBtn}</div></div>
     <div class="profile-content">${content}</div>
   </section>`;
 }
@@ -453,11 +624,11 @@ function siteFooter() {
     <div class="footer-main">
       <div class="footer-brand"><div><img src="/chunks/logo.svg" alt=""><b>${esc(S.brand)}</b></div><p>Улучшай и собирай собственный инвентарь CS2.</p></div>
       <div class="footer-column footer-contacts"><div><b>ПОДДЕРЖКА</b><a href="mailto:support@caser.gg">support@caser.gg</a></div><div><b>СОТРУДНИЧЕСТВО</b><a href="mailto:marketing@caser.gg">marketing@caser.gg</a></div></div>
-      <div class="footer-column"><b>НАВИГАЦИЯ</b><button onclick="go('inventory')">Инвентарь</button><button onclick="go('cases')">Кейсы</button><button onclick="go('upgrade')">Апгрейды</button><button onclick="go('rewards')">Награды</button></div>
+      <div class="footer-column"><b>НАВИГАЦИЯ</b><button onclick="openInventory()">Инвентарь</button><button onclick="go('cases')">Кейсы</button><button onclick="go('upgrade')">Апгрейды</button><button onclick="go('rewards')">Награды</button></div>
       <div class="footer-column"><b>ОБЩИЕ ПОЛОЖЕНИЯ</b><a href="/tos.html">Пользовательское соглашение</a><a href="/tos.html">Политика конфиденциальности</a><a href="/tos.html">Политика использования Cookie</a><a href="/tos.html">Политика AML/KYC</a><a href="/tos.html">Контакты</a></div>
       <div class="footer-language"><div class="lang-select">
-        <button type="button" onclick="toggleFooterLang(event)"><span class="lang-flag">${esc(S.footerLang)}</span><b>${esc(S.footerLang)}</b><i class="lang-chevron ${S.footerLangOpen ? 'open' : ''}">${chevronIcon()}</i></button>
-        ${S.footerLangOpen ? `<div class="lang-menu">${LANGS.map(item => `<button type="button" class="${item.code === S.footerLang ? 'active' : ''}" onclick="setFooterLang('${item.code}')"><span class="lang-flag">${esc(item.code)}</span><b>${esc(item.name)}</b>${item.code === S.footerLang ? '<i class="lang-check">✓</i>' : ''}</button>`).join('')}</div>` : ''}
+        <button type="button" onclick="toggleFooterLang()">${flagIcon(S.footerLang)}<b>${esc(S.footerLang)}</b><i class="lang-chevron ${S.footerLangOpen ? 'open' : ''}">${chevronIcon()}</i></button>
+        ${S.footerLangOpen ? `<div class="lang-menu">${LANGS.map(item => `<button type="button" class="${item.code === S.footerLang ? 'active' : ''}" onclick="setFooterLang('${item.code}')">${flagIcon(item.code)}<b>${esc(item.name)}</b>${item.code === S.footerLang ? '<i class="lang-check">✓</i>' : ''}</button>`).join('')}</div>` : ''}
       </div></div>
     </div>
     <div class="footer-company"><div><b>${esc(S.brand)} © 2026</b><p>Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.</p><span>Не аффилировано с Valve Corp.</span></div><div class="footer-payments"><b>mastercard</b><b>VISA</b></div></div>
@@ -503,7 +674,7 @@ function settingsModal() {
       <div class="settings-title"><img src="/chunks/settingIcon.svg" alt=""><h2>НАСТРОЙКИ</h2></div>
       <div class="settings-scroll">
         <label class="settings-field"><span>Никнейм</span><input id="settings-nickname" maxlength="32" value="${esc(settings.nickname)}" placeholder="Никнейм"></label>
-        <label class="settings-field"><span>Трейд-ссылка</span><div class="settings-trade"><input id="settings-trade" value="${esc(settings.tradeLink)}" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=..."><button type="button" onclick="copyTradeLink()" title="Копировать">▣</button></div><a href="https://steamcommunity.com/id/me/tradeoffers/privacy#trade_offer_access_url" target="_blank" rel="noreferrer">Узнать свою ссылку</a></label>
+        <label class="settings-field"><span>Трейд-ссылка</span><div class="settings-trade"><input id="settings-trade" value="${esc(settings.tradeLink)}" placeholder="https://steamcommunity.com/tradeoffer/new/?partner=..."><button type="button" id="copy-trade-btn" onclick="copyTradeLink()" title="Копировать"><img id="copy-icon" src="/chunks/copyIcon.svg" alt="Копировать"><img id="copy-success" src="/chunks/success.svg" alt="Скопировано" style="display:none"></button></div><a href="https://steamcommunity.com/id/me/tradeoffers/privacy#trade_offer_access_url" target="_blank" rel="noreferrer">Узнать свою ссылку</a></label>
         <section class="settings-privacy"><h3>Приватность Steam</h3>${options.map(([value, title, text]) => `<button type="button" data-privacy="${value}" class="settings-privacy-option ${settings.privacy === value ? 'active' : ''}" onclick="selectPrivacy('${value}')"><i><b></b></i><span><strong>${title}</strong><small>${text}</small></span></button>`).join('')}</section>
         <section class="settings-streamer"><div><h3>Режим стримера</h3><p>Скрывает личную информацию и баланс для безопасности во время стрима</p></div><button type="button" class="settings-switch ${settings.streamerMode ? 'active' : ''}" aria-pressed="${settings.streamerMode}" onclick="toggleStreamerMode()"><i></i></button></section>
       </div>
@@ -522,7 +693,7 @@ function paymentModal() {
     <header><h2>ПОПОЛНЕНИЕ БАЛАНСА</h2><button onclick="closePayment()" aria-label="Закрыть"><img src="/chunks/closeIcon3.svg" alt=""></button></header>
     <div class="payment-tabs"><button class="${S.paymentTab === 'card' ? 'active' : ''}" onclick="setPaymentTab('card')"><i>▰</i>КАРТОЙ</button><button class="${S.paymentTab === 'crypto' ? 'active' : ''}" onclick="setPaymentTab('crypto')"><i>₿</i>КРИПТОЙ</button><button class="${S.paymentTab === 'skins' ? 'active' : ''}" onclick="setPaymentTab('skins')"><i>◆</i>СКИНАМИ</button></div>
     <div class="payment-body"><div class="payment-currency"><span>Выберите валюту пополнения</span><div class="currency-select">
-      <button type="button" onclick="toggleCurrencyMenu(event)">${esc(S.paymentCurrency)}<i class="currency-chevron ${S.currencyOpen ? 'open' : ''}">${chevronIcon()}</i></button>
+      <button type="button" onclick="toggleCurrencyMenu()">${esc(S.paymentCurrency)}<i class="currency-chevron ${S.currencyOpen ? 'open' : ''}">${chevronIcon()}</i></button>
       ${S.currencyOpen ? `<div class="currency-menu">${CURRENCIES.map(item => `<button type="button" class="${item.code === S.paymentCurrency ? 'active' : ''}" onclick="setPaymentCurrency('${item.code}')"><span>${item.flag}</span><b>${esc(item.name)}</b><i>${item.code}</i>${item.code === S.paymentCurrency ? '<em>✓</em>' : ''}</button>`).join('')}</div>` : ''}
     </div></div><div class="payment-methods">${methods.map(([name, badge], index) => `<button class="${S.paymentMethod === index ? 'active' : ''}" onclick="selectPaymentMethod(${index})">${badge ? `<small>${badge}</small>` : ''}<b>${name}</b></button>`).join('')}</div></div>
     <div class="payment-bottom"><div class="payment-amount-head"><span>СУММА ПОПОЛНЕНИЯ</span><div>${[500,1000,2500,5000].map(amount => `<button class="${S.paymentAmount === amount ? 'active' : ''}" onclick="setPaymentAmount(${amount})">${amount.toLocaleString('ru-RU')}</button>`).join('')}</div></div>
@@ -546,16 +717,64 @@ function chatModal() {
 function pageContent() {
   if (S.page === 'cases') return casesPage();
   if (S.page === 'case') return caseDetailPage();
-  if (S.page === 'profile') return profilePage();
-  if (S.page === 'inventory') return inventoryPage();
+  if (S.page === 'profile' || S.page === 'inventory') return profilePage();
   if (S.page === 'rewards') return rewardsPage();
   if (S.page === 'steal') return stealPage();
   return upgradePage();
 }
+function openInventory() {
+  S.page = 'profile';
+  S.profileTab = 'items';
+  render();
+}
+let lastPageRendered = null;
 function render() {
-  $('#app').innerHTML = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page">${pageContent()}</div></main></div>${siteFooter()}
-    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}`;
+  const app = $('#app');
+  const html = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page" data-page="${esc(S.page || '')}">${pageContent()}</div></main></div>${siteFooter()}
+    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}`;
+  const pageChanged = S.page !== lastPageRendered;
+  lastPageRendered = S.page;
+  if (window.morphdom) {
+    morphdom(app, `<div class="app-root">${html}</div>`, {
+      childrenOnly: true,
+      onBeforeElUpdated(fromEl, toEl) {
+        if (!fromEl || fromEl.nodeType !== 1 || !toEl) return;
+        if (fromEl === document.activeElement && (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA' || fromEl.tagName === 'SELECT')) return false;
+        if (S.spinning && fromEl.classList && fromEl.classList.contains('pointer-orbit')) return false;
+      }
+    });
+  } else {
+    app.innerHTML = html;
+  }
+  if (pageChanged) {
+    const pageEl = app.querySelector('.page');
+    if (pageEl) {
+      pageEl.classList.remove('page-enter');
+      void pageEl.offsetWidth;
+      pageEl.classList.add('page-enter');
+    }
+  }
+  ensureImages();
   if (S.chat) loadChat();
+}
+
+let imageFallbackTimer = null;
+function ensureImages() {
+  if (imageFallbackTimer) clearTimeout(imageFallbackTimer);
+  imageFallbackTimer = setTimeout(() => {
+    for (const img of document.querySelectorAll('img[data-fb]')) {
+      if (img.complete && img.naturalWidth > 0) continue;
+      const rect = img.getBoundingClientRect();
+      const inView = rect.top < innerHeight && rect.bottom > 0 && rect.right > 0 && rect.left < innerWidth;
+      if (!inView) continue;
+      const fallback = img.dataset.fb;
+      if (fallback) {
+        img.dataset.fb = '';
+        img.onerror = null;
+        img.src = fallback;
+      }
+    }
+  }, 4000);
 }
 
 function upgradeBaseValue() {
@@ -563,13 +782,17 @@ function upgradeBaseValue() {
 }
 function recalculateChance() {
   const value = upgradeBaseValue();
-  S.chance = S.from && S.to
-    ? Math.min(95, Math.max(1, Math.floor(value / Number(S.to.priceCents) * 10000) / 100))
-    : null;
+  if (!S.from || !S.to) { S.chance = null; return; }
+  S.chance = Math.min(100, Math.max(0, Math.floor(value / Number(S.to.priceCents) * 10000) / 100));
+}
+function boostMinimumPrice(baseValue, boost) {
+  return boost >= 100
+    ? Math.ceil(baseValue * boost / 100)
+    : Math.ceil(baseValue * 100 / boost);
 }
 function upgradeTargets() {
   if (!S.from) return [];
-  const minimum = Math.ceil(upgradeBaseValue() * (1 + S.boost / 100));
+  const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
   return S.catalog.filter(item => item.priceCents >= minimum).sort((a, b) => a.priceCents - b.priceCents);
 }
 function choose(id, side) {
@@ -587,8 +810,7 @@ function choose(id, side) {
 function setBoost(value, shouldRender = true) {
   S.boost = Number(value);
   const targets = upgradeTargets();
-  const tierIndex = { 200: 0, 500: 1, 1000: 2, 30: 3, 50: 4, 75: 5 }[S.boost] || 3;
-  S.to = targets[Math.min(tierIndex, Math.max(0, targets.length - 1))] || null;
+  S.to = targets[0] || null;
   recalculateChance();
   if (shouldRender) render();
 }
@@ -616,7 +838,7 @@ function applyTargetFilters() {
   }
 }
 function setTargetPage(page) {
-  const pageSize = 12;
+  const pageSize = 16;
   const query = S.targetSearch.trim().toLowerCase();
   const minT = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
   const maxT = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
@@ -642,6 +864,8 @@ async function sellItem(id) {
     toast(`Предмет продан за ${money(result.amountCents)}`);
   } catch (error) { toast(error.message, 'error'); }
 }
+
+
 
 async function refreshAccount() {
   const [me, inventory, cases, drops, profile, stats] = await Promise.all([
@@ -697,38 +921,186 @@ async function openCase(caseId) {
     await refreshAccount();
     S.rouletteItems = [];
     S.caseResult = result.item;
-    toast(`${result.item.name} добавлен в инвентарь сайта`);
+    S.caseReveal = true;
   } catch (error) {
     S.rouletteItems = [];
     toast(error.message, 'error');
   } finally {
     S.opening = null;
     render();
+    if (S.caseReveal) {
+      setTimeout(() => { if (S.caseReveal) { S.caseReveal = false; render(); } }, 6000);
+    }
   }
+}
+
+let pointerRaf = null;
+let pointerCurrent = 0;
+
+function applyPointerAngle(deg) {
+  S.pointerAngle = Math.round(deg * 100) / 100;
+  const orbit = document.querySelector('.pointer-orbit');
+  if (orbit) orbit.style.setProperty('--angle', S.pointerAngle + 'deg');
+}
+
+function startPointerSpin() {
+  if (pointerRaf) cancelAnimationFrame(pointerRaf);
+  const step = () => {
+    if (!S.spinning) return;
+    pointerCurrent = (pointerCurrent + 8) % 360;
+    applyPointerAngle(pointerCurrent);
+    pointerRaf = requestAnimationFrame(step);
+  };
+  pointerRaf = requestAnimationFrame(step);
+}
+
+function pointerLanding(won, chance) {
+  const half = Math.max(0, (Number(chance) || 0) * 1.8);
+  const rand = (min, max) => min + Math.random() * (max - min);
+  let target;
+  if (won) {
+    const inner = Math.max(1.5, half - 5);
+    target = rand(-inner, inner);
+  } else {
+    const darkHalf = Math.max(8, 180 - half - 8);
+    target = 180 + rand(-darkHalf, darkHalf);
+  }
+  target = ((target % 360) + 360) % 360;
+  return 4 * 360 + target;
+}
+
+function spinPointerTo(total, duration = 2400) {
+  return new Promise(resolve => {
+    if (pointerRaf) cancelAnimationFrame(pointerRaf);
+    pointerRaf = null;
+    const start = pointerCurrent;
+    const delta = total - start;
+    const t0 = performance.now();
+    const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const step = now => {
+      const t = Math.min(1, (now - t0) / duration);
+      pointerCurrent = start + delta * ease(t);
+      applyPointerAngle(pointerCurrent);
+      if (t < 1) pointerRaf = requestAnimationFrame(step);
+      else { pointerRaf = null; resolve(); }
+    };
+    pointerRaf = requestAnimationFrame(step);
+  });
 }
 
 async function upgrade() {
   if (!S.from || !S.to || S.spinning) return;
   S.spinning = true;
+  startPointerSpin();
   render();
   try {
     const result = await api('/api/upgrade', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fromAssetId: S.from.assetid, toCatalogId: S.to.catalogId, boostPercent: S.boost, addBalanceCents: S.addBalance })
     });
-    await new Promise(resolve => setTimeout(resolve, S.turbo ? 250 : 1200));
+    await new Promise(resolve => setTimeout(resolve, S.turbo ? 250 : 700));
+    const total = pointerLanding(!!result.won, result.chance);
+    await spinPointerTo(total, S.turbo ? 1400 : 2400);
     await refreshAccount();
+    S.upgradeResult = {
+      won: !!result.won,
+      item: result.item || null,
+      from: S.from,
+      to: S.to
+    };
     S.from = null;
     S.to = null;
     S.chance = null;
     S.addBalance = 0;
-    toast(result.won ? `${result.item.name} добавлен в инвентарь сайта` : 'Апгрейд не удался — исходный предмет использован');
   } catch (error) {
+    S.upgradeResult = null;
+    if (pointerRaf) cancelAnimationFrame(pointerRaf);
+    pointerRaf = null;
+    pointerCurrent = 0;
+    applyPointerAngle(0);
     toast(error.message, 'error');
   } finally {
     S.spinning = false;
     render();
+    if (S.upgradeResult) {
+      setTimeout(() => { if (S.upgradeResult) { S.upgradeResult = null; render(); } }, 8000);
+    }
   }
+}
+function resetPointer() {
+  if (pointerRaf) cancelAnimationFrame(pointerRaf);
+  pointerRaf = null;
+  pointerCurrent = 0;
+  applyPointerAngle(0);
+}
+function closeUpgradeResult() {
+  S.upgradeResult = null;
+  resetPointer();
+  render();
+}
+function resultCheckIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 12.5 9.5 17.5 19.5 6.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+function resultCrossIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>';
+}
+function resultItemBlock(item) {
+  if (!item) return '';
+  return `<div class="result-item skin-card" ${rarityStyle(item)}>
+    ${priceTag(item)}${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}${art(item)}
+    <strong>${esc(item.weapon || item.name || '')}</strong>
+    <small>${esc(item.skin || item.marketName || '')}</small>
+    <span class="rarity-name">${esc(item.rarity || '')}</span>${rarityLine()}
+  </div>`;
+}
+function caseRevealOverlay() {
+  if (!S.caseReveal || !S.caseResult) return '';
+  const item = S.caseResult;
+  return `<div class="result-overlay win" role="dialog" aria-modal="true" aria-label="Выпал предмет">
+    <div class="result-card">
+      <div class="result-badge">${resultCheckIcon()}</div>
+      <h2>ВЫПАЛ ПРЕДМЕТ</h2>
+      <p>${esc(item.name)} добавлен в инвентарь сайта</p>
+      ${resultItemBlock(item)}
+      ${resultParticles()}
+      <button class="result-close" onclick="closeCaseReveal()">В ИНВЕНТАРЬ</button>
+    </div>
+  </div>`;
+}
+function closeCaseReveal() {
+  S.caseReveal = false;
+  S.caseResult = null;
+  if (S.page === 'case') { S.page = 'inventory'; }
+  render();
+}
+function resultParticles() {
+  const colors = ['#1075E0', '#56A8FF', '#1AECFF', '#44C987', '#FFFFFF'];
+  const parts = Array.from({ length: 22 }, (_, i) => {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 90 + Math.random() * 160;
+    const dx = Math.cos(angle) * dist;
+    const dy = Math.sin(angle) * dist - 60;
+    const size = 4 + Math.random() * 7;
+    const color = colors[i % colors.length];
+    return `<i style="--dx:${dx.toFixed(0)}px;--dy:${dy.toFixed(0)}px;--d:${(Math.random() * 0.45).toFixed(2)}s;--dur:${(0.9 + Math.random() * 0.9).toFixed(2)}s;--s:${size.toFixed(1)}px;--c:${color}"></i>`;
+  }).join('');
+  return `<div class="result-particles" aria-hidden="true">${parts}</div>`;
+}
+function resultOverlay() {
+  const result = S.upgradeResult;
+  if (!result) return '';
+  const won = result.won;
+  const item = won ? result.item : result.from;
+  return `<div class="result-overlay ${won ? 'win' : 'lose'}" role="dialog" aria-modal="true" aria-label="${won ? 'Апгрейд успешен' : 'Апгрейд не удался'}">
+    <div class="result-card">
+      <div class="result-badge">${won ? resultCheckIcon() : resultCrossIcon()}</div>
+      <h2>${won ? 'АПГРЕЙД УСПЕШЕН' : 'АПГРЕЙД НЕ УДАЛСЯ'}</h2>
+      <p>${won ? 'Новый предмет добавлен в инвентарь сайта' : 'Исходный предмет был использован в апгрейде'}</p>
+      ${resultItemBlock(item)}
+      ${resultParticles()}
+      <button class="result-close" onclick="closeUpgradeResult()">ПРОДОЛЖИТЬ</button>
+    </div>
+  </div>`;
 }
 
 function toggleSoundBtn() {
@@ -741,8 +1113,7 @@ function toggleTurbo() {
   localStorage.setItem('keyser-turbo', S.turbo ? '1' : '0');
   render();
 }
-function toggleCurrencyMenu(event) {
-  event.stopPropagation();
+function toggleCurrencyMenu() {
   S.currencyOpen = !S.currencyOpen;
   render();
 }
@@ -751,8 +1122,7 @@ function setPaymentCurrency(code) {
   S.currencyOpen = false;
   render();
 }
-function toggleFooterLang(event) {
-  event.stopPropagation();
+function toggleFooterLang() {
   S.footerLangOpen = !S.footerLangOpen;
   render();
 }
@@ -845,11 +1215,46 @@ function toggleStreamerMode() {
     button.setAttribute('aria-pressed', String(S.settings.streamerMode));
   }
 }
+function flashCopySuccess() {
+  const copyIcon = document.querySelector('#copy-icon');
+  const successIcon = document.querySelector('#copy-success');
+  if (!copyIcon || !successIcon) return;
+  copyIcon.style.display = 'none';
+  successIcon.style.display = 'block';
+  setTimeout(() => {
+    if (copyIcon) copyIcon.style.display = 'block';
+    if (successIcon) successIcon.style.display = 'none';
+  }, 1500);
+}
+function legacyCopy(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try { document.execCommand('copy'); return true; }
+  catch { return false; }
+  finally { area.remove(); }
+}
 async function copyTradeLink() {
   const value = document.querySelector('#settings-trade')?.value || '';
   if (!value) return toast('Сначала вставьте трейд-ссылку');
-  try { await navigator.clipboard.writeText(value); toast('Трейд-ссылка скопирована'); }
-  catch { toast('Не удалось скопировать ссылку'); }
+  let ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(value); ok = true; }
+      catch { ok = legacyCopy(value); }
+    } else {
+      ok = legacyCopy(value);
+    }
+  } catch { ok = legacyCopy(value); }
+  if (ok) {
+    flashCopySuccess();
+    toast('Трейд-ссылка скопирована');
+  } else {
+    toast('Не удалось скопировать ссылку');
+  }
 }
 async function saveSettings() {
   if (!S.settings) return;
@@ -917,11 +1322,12 @@ function toast(text, type = '') {
 }
 
 Object.assign(window, {
-  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, selectCase, openCase, upgrade,
+  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
   login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat,
-  toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang
+  toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
+  closeUpgradeResult, closeCaseReveal, openInventory
 });
 boot();

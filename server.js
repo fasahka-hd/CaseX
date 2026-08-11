@@ -55,7 +55,7 @@ function catalogItem(id, name, image, priceCents, rarity, wear = '') {
   };
 }
 
-const CATALOG = [
+const STATIC_CATALOG = [
   catalogItem('p250-sand-dune', 'P250 | Sand Dune', 'p250-sand-dune', 3500, 'consumer', 'FN'),
   catalogItem('awp-safari-mesh', 'AWP | Safari Mesh', 'awp-safari-mesh', 8900, 'industrial', 'BS'),
   catalogItem('mp7-cirrus', 'MP7 | Cirrus', 'mp7-cirrus', 14600, 'milspec', 'MW'),
@@ -202,7 +202,169 @@ catalogItem('ak47-redline', 'AK-47 | Redline', 'ak47-redline', 105000, 'restrict
   catalogItem('falchion-case-hardened', '★ Falchion | Case Hardened', 'falchion-case-hardened', 1200000, 'contraband', 'WW'),
   catalogItem('karambit-crimson-web', '★ Karambit | Crimson Web', 'karambit-crimson-web', 1900000, 'covert', 'FT'),
 ];
-const CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
+let CATALOG_BY_ID = new Map(STATIC_CATALOG.map(item => [item.catalogId, item]));
+
+let CATALOG = STATIC_CATALOG.slice();
+
+const RARITY_KEY_BY_NAME = {
+  'Consumer Grade': 'consumer',
+  'Industrial Grade': 'industrial',
+  'Mil-Spec Grade': 'milspec',
+  'Restricted': 'restricted',
+  'Classified': 'classified',
+  'Covert': 'covert',
+  'Extraordinary': 'covert',
+  'Contraband': 'contraband'
+};
+const FALLBACK_PRICE_CENTS = {
+  consumer: 2500, industrial: 5000, milspec: 10000,
+  restricted: 25000, classified: 60000, covert: 150000, contraband: 1000000
+};
+
+let STEAM_SKINS_PROMISE = null;
+function fetchSteamSkins() {
+  if (STEAM_SKINS_PROMISE) return STEAM_SKINS_PROMISE;
+  STEAM_SKINS_PROMISE = (async () => {
+    try {
+      const response = await fetch(
+        'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json',
+        { signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined }
+      );
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const skins = await response.json();
+      console.log(`[skins] Каталог скинов Steam загружен: ${Array.isArray(skins) ? skins.length : 0}`);
+      return Array.isArray(skins) ? skins : [];
+    } catch (error) {
+      console.warn('[skins] Каталог Steam недоступен:', error.message);
+      STEAM_SKINS_PROMISE = null;
+      return [];
+    }
+  })();
+  return STEAM_SKINS_PROMISE;
+}
+
+function steamKey(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const parts = raw.split('|');
+  const weapon = parts.shift() || '';
+  const skin = parts.join('|') || '';
+  const w = String(weapon).toLowerCase().replace(/★/g, ' ').replace(/knife/g, ' ').replace(/[^a-z0-9]+/g, '');
+  const s = String(skin).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return w ? `${w}|${s}` : '';
+}
+
+async function loadSteamSkinMap() {
+  const skins = await fetchSteamSkins();
+  const map = new Map();
+  for (const skin of skins) {
+    if (!skin || !skin.image) continue;
+    const key = steamKey(skin.name);
+    if (key && !map.has(key)) map.set(key, skin.image);
+  }
+  return map;
+}
+
+let STEAM_SKIN_MAP_PROMISE = null;
+function steamSkinMap() {
+  if (!STEAM_SKIN_MAP_PROMISE) STEAM_SKIN_MAP_PROMISE = loadSteamSkinMap();
+  return STEAM_SKIN_MAP_PROMISE;
+}
+
+function steamIconFor(name) {
+  const map = STEAM_SKIN_MAP;
+  return map ? map.get(steamKey(name)) || '' : '';
+}
+let STEAM_SKIN_MAP = null;
+steamSkinMap().then(map => { STEAM_SKIN_MAP = map; }).catch(() => {});
+
+function withSteamIcon(item) {
+  if (!item || typeof item !== 'object') return item;
+  const local = item.localIcon || item.icon || '';
+  const steam = item.icon && String(item.icon).startsWith('http') ? item.icon : steamIconFor(item.name || item.itemName);
+  return { ...item, localIcon: local, icon: steam || local };
+}
+
+function slugId(name) {
+  const slug = String(name || '').toLowerCase()
+    .replace(/★/g, ' ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'item';
+}
+
+let SKINPORT_PRICES = null;
+let SKINPORT_PROMISE = null;
+function skinportPrices() {
+  if (!SKINPORT_PROMISE) {
+    SKINPORT_PROMISE = (async () => {
+      const map = new Map();
+      try {
+        const response = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=RUB', {
+          signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const items = await response.json();
+        for (const item of Array.isArray(items) ? items : []) {
+          const base = String(item.market_hash_name || '')
+            .replace(/^(StatTrak™|Souvenir)\s*/i, '')
+            .replace(/\s*\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '');
+          const price = Number(item.min_price);
+          if (!base || !Number.isFinite(price) || price <= 0) continue;
+          const cents = Math.max(100, Math.round(price * 100));
+          if (!map.has(base) || cents < map.get(base)) map.set(base, cents);
+        }
+        console.log(`[skins] Цены skinport загружены: ${map.size}`);
+      } catch (error) {
+        console.warn('[skins] Цены skinport недоступны:', error.message);
+      }
+      SKINPORT_PRICES = map;
+      return map;
+    })();
+  }
+  return SKINPORT_PROMISE;
+}
+
+function dynamicCatalogItem(skin, priceCents) {
+  const [weapon, skinName = ''] = String(skin.name || '').split('|');
+  const rarityKey = RARITY_KEY_BY_NAME[skin.rarity && skin.rarity.name] || 'milspec';
+  const R = RARITIES[rarityKey] || RARITIES.milspec;
+  const id = slugId(skin.name);
+  return {
+    catalogId: id,
+    id,
+    name: skin.name,
+    weapon: String(weapon).trim(),
+    skin: String(skinName).trim(),
+    marketName: String(skinName).trim(),
+    wear: '',
+    icon: skin.image || '',
+    localIcon: '',
+    priceCents: priceCents || FALLBACK_PRICE_CENTS[rarityKey],
+    rarity: R.name,
+    rarityKey,
+    rarityColor: R.color,
+    rarityRank: R.rank
+  };
+}
+
+async function buildFullCatalog() {
+  const [skins, prices] = await Promise.all([fetchSteamSkins(), skinportPrices()]);
+  const staticNames = new Set(STATIC_CATALOG.map(item => item.name));
+  const usedIds = new Set(CATALOG_BY_ID.keys());
+  const dynamic = [];
+  for (const skin of skins) {
+    if (!skin || !skin.name) continue;
+    if (staticNames.has(skin.name)) continue;
+    let id = slugId(skin.name);
+    if (usedIds.has(id)) id = `${id}-2`;
+    usedIds.add(id);
+    dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, prices.get(skin.name)));
+  }
+  CATALOG = [...STATIC_CATALOG, ...dynamic];
+  CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
+  console.log(`[catalog] Всего предметов в каталоге: ${CATALOG.length} (статичных ${STATIC_CATALOG.length} + динамических ${dynamic.length})`);
+}
 
 const CASES = [
   {
@@ -449,7 +611,7 @@ async function steamProfile(id) {
   return { name: `Steam ${id.slice(-6)}`, avatar: '' };
 }
 function publicCatalogItem(item) {
-  return { ...item };
+  return withSteamIcon({ ...item });
 }
 function inventoryRows(userId) {
   return db.prepare(`
@@ -461,7 +623,7 @@ function inventoryRows(userId) {
     FROM site_inventory
     WHERE user_id = ? AND status = 'active'
     ORDER BY id DESC
-  `).all(userId).map(row => ({
+  `).all(userId).map(row => withSteamIcon({
     ...row,
     assetid: String(row.assetid),
     wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
@@ -493,7 +655,8 @@ function dropPayload(row) {
     id: row.id,
     userName: row.user_name,
     itemName: row.item_name,
-    itemIcon: row.item_icon,
+    itemIcon: steamIconFor(row.item_name) || row.item_icon,
+    localIcon: row.item_icon,
     priceCents: row.price_cents,
     rarity: row.rarity,
     rarityColor: row.rarity_color,
@@ -605,6 +768,21 @@ app.get('/api/profile', (req, res) => {
       rarity_rank AS rarityRank, source, created_at AS createdAt
     FROM site_inventory WHERE user_id = ? ORDER BY price_cents DESC, id DESC LIMIT 1
   `).get(account.id) || null;
+  const historyRows = db.prepare(`
+    SELECT id AS assetid, item_name AS name, weapon_name AS weapon, skin_name AS skin,
+      item_icon AS icon, price_cents AS priceCents, rarity, rarity_color AS rarityColor,
+      rarity_rank AS rarityRank, source, status, created_at AS createdAt
+    FROM site_inventory WHERE user_id = ? ORDER BY id DESC LIMIT 40
+  `).all(account.id).map(row => withSteamIcon({ ...row, assetid: String(row.assetid) }));
+  const upgradeRows = db.prepare(`
+    SELECT ur.id, ur.chance, ur.won, ur.created_at AS createdAt,
+      fi.item_name AS fromName, fi.item_icon AS fromIcon, fi.price_cents AS fromPriceCents,
+      ti.item_name AS toName, ti.item_icon AS toIcon, ti.price_cents AS toPriceCents
+    FROM upgrade_rounds ur
+    LEFT JOIN site_inventory fi ON fi.id = ur.from_item_id
+    LEFT JOIN site_inventory ti ON ti.id = ur.result_item_id
+    WHERE ur.user_id = ? ORDER BY ur.id DESC LIMIT 30
+  `).all(account.id).map(row => withSteamIcon(row));
   const casesOpened = db.prepare('SELECT COUNT(*) AS count FROM case_openings WHERE user_id = ?').get(account.id).count;
   const upgradesMade = db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds WHERE user_id = ?').get(account.id).count;
   const sold = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents),0) AS total FROM inventory_sales WHERE user_id = ?').get(account.id);
@@ -614,7 +792,9 @@ app.get('/api/profile', (req, res) => {
     balanceCents: account.balance_cents,
     withdrawnCents: 0,
     activeItems,
-    bestDrop: bestDrop ? { ...bestDrop, assetid: String(bestDrop.assetid) } : null,
+    bestDrop: bestDrop ? { ...withSteamIcon(bestDrop), assetid: String(bestDrop.assetid) } : null,
+    history: historyRows,
+    upgrades: upgradeRows,
     stats: { casesOpened, upgradesMade, soldItems: sold.count, soldCents: sold.total }
   });
 });
@@ -747,13 +927,11 @@ app.post('/api/upgrade', (req, res) => {
       if (!from) throw new Error('Исходный предмет уже недоступен');
       if (addBalanceCents > Number(account.balance_cents || 0)) throw new Error('Недостаточно средств на балансе');
       const totalValue = Number(from.price_cents) + addBalanceCents;
-      const minimumTargetPrice = Math.ceil(totalValue * (1 + boostPercent / 100));
-      if (target.priceCents < minimumTargetPrice) throw new Error(`Цель для +${boostPercent}% должна стоить не менее ${minimumTargetPrice / 100} ₽`);
       if (addBalanceCents > 0) {
         db.prepare('UPDATE users SET balance_cents = balance_cents - ?, updated_at = ? WHERE id = ?')
           .run(addBalanceCents, Date.now(), account.id);
       }
-      const chance = Math.min(95, Math.max(1, Math.floor(totalValue / target.priceCents * 10000) / 100));
+      const chance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < chance;
       const now = Date.now();
@@ -837,4 +1015,11 @@ app.post('/api/support/messages', (req, res) => {
   res.json({ id: result.lastInsertRowid, message, createdAt: now });
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`${BRAND_NAME}: ${BASE_URL}`));
+(async () => {
+  try {
+    await buildFullCatalog();
+  } catch (error) {
+    console.warn('[catalog] Не удалось построить полный каталог:', error.message);
+  }
+  app.listen(PORT, '0.0.0.0', () => console.log(`${BRAND_NAME}: ${BASE_URL}`));
+})();
