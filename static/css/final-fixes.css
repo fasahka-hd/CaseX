@@ -1,7 +1,5 @@
-/* Final UI pass: Caser-style header, wheel pointer, menus and interaction polish. */
 :root{--header:80px;--caser-blue:#83D8FF;--caser-green:#44C987}
 
-/* Header — visually follows caser.live: transparent glass + headerBG.webp. */
 .top{height:var(--header);grid-template-columns:220px 1fr 420px;background:rgba(7,12,16,.48)!important;backdrop-filter:blur(32px);-webkit-backdrop-filter:blur(32px);border-bottom:0;box-shadow:0 10px 35px rgba(0,0,0,.25);overflow:hidden}
 .top:after{content:"";position:absolute;inset:0;z-index:0;background:linear-gradient(180deg,rgba(0,0,0,.12),rgba(0,0,0,.28));pointer-events:none}
 .header-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;opacity:.9;pointer-events:none}
@@ -24,27 +22,21 @@
 .sidebar{top:var(--header)}
 .main{padding-top:24px}
 
-/* The wheel pointer belongs below the wheel, pointing inward/up. */
 .wheel-stage{width:260px!important;height:278px!important;margin:8px 0 0!important}
 .wheel-stage .wheel{position:relative}
 .pointer-orbit{top:50%!important;left:50%!important}
 .pointer-orbit .pointer{top:auto!important;bottom:-143px!important;transform:translateX(-50%) rotate(180deg)!important;width:56px!important;height:62px!important}
-/* The asset is oriented for the old top placement; rotating it keeps the tip aimed at the wheel from below. */
 
-/* No fake reload/flicker on every state update. */
 .page.page-enter{animation:none!important}
 .app-root{min-height:100vh}
 button{touch-action:manipulation}
 button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid rgba(131,216,255,.85);outline-offset:2px}
 
-/* Language menu: no check mark; active language is indicated only by text/background. */
 .lang-check{display:none!important}
 .lang-menu button.active{background:rgba(131,216,255,.08)!important;color:#83D8FF!important}
 
-/* Make the language selector usable on top of the footer and on narrow screens. */
 .footer-language{position:relative;z-index:20}.lang-select,.lang-menu{position:relative;z-index:30}.lang-menu{max-height:320px;overflow:auto}
 
-/* Prevent accidental native button text selection and weird image dragging. */
 button img{pointer-events:none;-webkit-user-drag:none}
 
 @media (max-width:1100px){

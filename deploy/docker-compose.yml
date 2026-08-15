@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: upgrader_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGUSER:-upgrader}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-upgrader_dev_pass}
+      POSTGRES_DB: ${PGDATABASE:-upgrader}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-upgrader}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: upgrader_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: ..
+    container_name: upgrader_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: postgres
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${PGUSER:-upgrader}
+      PGPASSWORD: ${PGPASSWORD:-upgrader_dev_pass}
+      PGDATABASE: ${PGDATABASE:-upgrader}
+      REDIS_ENABLED: "1"
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+      BASE_URL: ${BASE_URL:-}
+      SESSION_SECRET: ${SESSION_SECRET:?укажите SESSION_SECRET}
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      ADMIN_STEAMIDS: ${ADMIN_STEAMIDS:-}
+      SUPPORT_STEAMIDS: ${SUPPORT_STEAMIDS:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  nginx:
+    image: nginx:alpine
+    container_name: upgrader_nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  pgdata:
+  redisdata:

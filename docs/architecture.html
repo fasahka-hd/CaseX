@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upgrader.vip — Высокоуровневая архитектура</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  body{
+    margin:0;padding:32px 20px 70px;
+    background:#0b0e13;
+    color:#e6e9ee;
+    font:14px/1.5 "Segoe UI",Roboto,Arial,sans-serif;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{margin:0 0 6px;font-size:27px;letter-spacing:-.02em}
+  .sub{margin:0 0 30px;color:#8d97a4;font-size:14px}
+
+  .layer{margin-bottom:16px}
+  .layer-title{
+    display:flex;align-items:center;gap:10px;
+    margin:0 0 10px;
+    color:#7f8996;font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .layer-title::after{content:"";flex:1;height:1px;background:rgba(255,255,255,.09)}
+
+  .box{
+    padding:14px 16px;
+    background:linear-gradient(160deg,#171c24,#12161d);
+    border:1px solid rgba(255,255,255,.09);
+    border-radius:9px;
+  }
+  .box h3{
+    margin:0 0 9px;
+    font-size:13px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;
+    display:flex;align-items:center;gap:8px;
+  }
+  .box ul{margin:0;padding-left:16px}
+  .box li{color:#9aa4b2;font-size:12.5px;margin-bottom:3px}
+  .box li:last-child{margin-bottom:0}
+  .box .note{margin:0;color:#9aa4b2;font-size:12.5px}
+
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+
+  .accent-user   h3{color:#7cc4ff}  .accent-user{border-color:rgba(124,196,255,.32)}
+  .accent-edge   h3{color:#ffa657}  .accent-edge{border-color:rgba(255,166,87,.32)}
+  .accent-front  h3{color:#8bd6ff}  .accent-front{border-color:rgba(139,214,255,.3)}
+  .accent-gate   h3{color:#c79bff}  .accent-gate{border-color:rgba(199,155,255,.34)}
+  .accent-svc    h3{color:#5fdb9d}  .accent-svc{border-color:rgba(95,219,157,.28)}
+  .accent-bot    h3{color:#ffd479}  .accent-bot{border-color:rgba(255,212,121,.3)}
+  .accent-admin  h3{color:#ff8080}  .accent-admin{border-color:rgba(255,128,128,.36)}
+  .accent-infra  h3{color:#79c0ff}  .accent-infra{border-color:rgba(121,192,255,.3)}
+  .accent-sec    h3{color:#ff9d9d}  .accent-sec{border-color:rgba(255,157,157,.3)}
+
+  .flow{display:flex;justify-content:center;margin:9px 0;color:#4d5766;font-size:17px;line-height:1}
+  .flow.two::before{content:"⇅"}
+  .flow.down::before{content:"↓"}
+
+  .pill{
+    display:inline-block;padding:1px 7px;margin-left:6px;
+    border-radius:20px;font-size:9.5px;font-weight:800;letter-spacing:.05em;vertical-align:1px;
+  }
+  .pill.done{background:rgba(68,201,135,.16);color:#5fdb9d}
+  .pill.part{background:rgba(224,164,43,.16);color:#e0a42b}
+  .pill.todo{background:rgba(255,255,255,.07);color:#8d97a4}
+
+  .legend{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:6px}
+  .legend div{padding:10px 13px;background:#12161d;border:1px solid rgba(255,255,255,.08);border-radius:7px;color:#9aa4b2;font-size:12.5px}
+  .legend b{display:block;margin-bottom:2px;color:#e6e9ee;font-size:12px}
+
+  ol.flows{margin:0;padding-left:19px;columns:2;column-gap:26px}
+  ol.flows li{color:#9aa4b2;font-size:12.5px;margin-bottom:5px;break-inside:avoid}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:8px 11px;text-align:left;border-bottom:1px solid rgba(255,255,255,.08);vertical-align:top}
+  th{color:#7f8996;font-size:10.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+  td.st{white-space:nowrap}
+
+  @media(max-width:900px){
+    .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .g3{grid-template-columns:repeat(2,minmax(0,1fr))}
+    ol.flows{columns:1}
+    .legend{grid-template-columns:1fr}
+  }
+  @media(max-width:600px){
+    .g4,.g3,.g2{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Upgrader.vip — Высокоуровневая архитектура</h1>
+  <p class="sub">Обзор компонентов и взаимодействий системы</p>
+
+  <div class="layer">
+    <div class="layer-title">Клиент</div>
+    <div class="box accent-user">
+      <h3>Пользователь</h3>
+      <p class="note">Браузер / Мобильное приложение</p>
+    </div>
+  </div>
+
+  <div class="flow two"></div>
+
+  <div class="layer">
+    <div class="layer-title">Периметр</div>
+    <div class="grid g2">
+      <div class="box accent-edge">
+        <h3>Cloudflare <span class="pill todo">план</span></h3>
+        <ul><li>CDN</li><li>WAF</li><li>DDoS защита</li><li>SSL/TLS</li></ul>
+      </div>
+      <div class="box accent-edge">
+        <h3>Nginx Reverse Proxy <span class="pill part">конфиг готов</span></h3>
+        <ul><li>Балансировка нагрузки</li><li>Терминация SSL</li><li>Маршрутизация запросов</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow two"></div>
+
+  <div class="layer">
+    <div class="layer-title">Клиентское приложение</div>
+    <div class="box accent-front">
+      <h3>Frontend (SPA) <span class="pill part">частично</span></h3>
+      <div class="grid g3" style="margin-top:4px">
+        <ul><li>React / TypeScript</li><li>Аутентификация</li></ul>
+        <ul><li>Апгрейд</li><li>Кейсы</li><li>Инвентарь</li></ul>
+        <ul><li>Платежи</li><li>Профиль пользователя</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow down"></div>
+
+  <div class="layer">
+    <div class="layer-title">Вход в бэкенд</div>
+    <div class="box accent-gate">
+      <h3>API Gateway <span class="pill part">частично</span></h3>
+      <p class="note">Единая точка входа для всех запросов</p>
+    </div>
+  </div>
+
+  <div class="flow down"></div>
+
+  <div class="layer">
+    <div class="layer-title">Микросервисы</div>
+    <div class="grid g3">
+      <div class="box accent-svc">
+        <h3>Auth Service <span class="pill part">частично</span></h3>
+        <ul><li>Steam OAuth 2.0</li><li>Регистрация / Вход</li><li>JWT токены</li><li>Восстановление доступа</li></ul>
+      </div>
+      <div class="box accent-svc">
+        <h3>Upgrade Service <span class="pill done">есть</span></h3>
+        <ul><li>Механика апгрейда</li><li>Расчёт вероятностей</li><li>Генератор случайных чисел (RNG)</li><li>Результаты апгрейдов</li><li>История апгрейдов</li></ul>
+      </div>
+      <div class="box accent-svc">
+        <h3>Case Service <span class="pill done">есть</span></h3>
+        <ul><li>Управление кейсами</li><li>Открытие кейсов</li><li>Шанс выпадения предметов</li><li>История открытий</li></ul>
+      </div>
+      <div class="box accent-svc">
+        <h3>Inventory Service <span class="pill done">есть</span></h3>
+        <ul><li>Инвентарь пользователя</li><li>Предметы и скины</li><li>Цены и стоимость</li><li>Статусы предметов</li><li>История перемещений</li></ul>
+      </div>
+      <div class="box accent-svc">
+        <h3>Payment Service <span class="pill todo">план</span></h3>
+        <ul><li>Пополнение баланса</li><li>Вывод средств (скины)</li><li>Платёжные системы</li><li>Криптовалюты</li><li>История транзакций</li></ul>
+      </div>
+      <div class="box accent-svc">
+        <h3>Steam Service <span class="pill part">частично</span></h3>
+        <ul><li>Интеграция со Steam API</li><li>Получение инвентаря</li><li>Создание Trade Offer</li><li>Синхронизация данных</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow two"></div>
+
+  <div class="layer">
+    <div class="layer-title">Кластер Steam ботов <span class="pill todo" style="margin-left:2px">план</span></div>
+    <div class="grid g3">
+      <div class="box accent-bot">
+        <h3>Боты депозита</h3>
+        <ul><li>Приём предметов</li><li>Обработка трейдов</li><li>Подтверждение трейдов</li></ul>
+      </div>
+      <div class="box accent-bot">
+        <h3>Боты вывода</h3>
+        <ul><li>Отправка предметов</li><li>Обработка Trade Offer</li><li>Подтверждение вывода</li></ul>
+      </div>
+      <div class="box accent-bot">
+        <h3>Торговые боты</h3>
+        <ul><li>Передача предметов между ботами</li><li>Оптимизация запасов</li></ul>
+      </div>
+    </div>
+    <div class="flow two"></div>
+    <div class="box accent-bot">
+      <h3>Steam Web API</h3>
+      <div class="grid g3" style="margin-top:4px">
+        <ul><li>Инвентарь</li></ul>
+        <ul><li>Trade Offer</li></ul>
+        <ul><li>Данные профиля</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">Управление</div>
+    <div class="box accent-admin">
+      <h3>Административная панель <span class="pill done">готово</span></h3>
+      <div class="grid g4" style="margin-top:4px">
+        <ul><li>Управление пользователями</li><li>Просмотр транзакций</li></ul>
+        <ul><li>Управление кейсами и дропами</li><li>Настройка коэффициентов</li></ul>
+        <ul><li>Управление ботами</li><li>Промокоды и бонусы</li></ul>
+        <ul><li>Служба поддержки</li><li>Логи и мониторинг системы</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow down"></div>
+
+  <div class="layer">
+    <div class="layer-title">Инфраструктура</div>
+    <div class="grid g3">
+      <div class="box accent-infra">
+        <h3>PostgreSQL <span class="pill done">внедрён</span></h3>
+        <ul><li>Пользователи</li><li>Инвентарь</li><li>Транзакции</li><li>История апгрейдов</li><li>Кейсы и дропы</li><li>Платежи и выводы</li><li>Настройки системы</li></ul>
+      </div>
+      <div class="box accent-infra">
+        <h3>Redis <span class="pill done">внедрён</span></h3>
+        <ul><li>Кеширование данных</li><li>Сессии пользователей</li><li>Временные данные</li><li>Rate Limiting</li><li>Публикация / Подписка</li></ul>
+      </div>
+      <div class="box accent-infra">
+        <h3>RabbitMQ <span class="pill part">очередь есть</span></h3>
+        <ul><li>Асинхронные задачи</li><li>Обработка платежей</li><li>Уведомления</li><li>Обновление предметов</li><li>Фоновые задачи</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">Уровень безопасности</div>
+    <div class="box accent-sec">
+      <h3>Сквозные механизмы</h3>
+      <div class="grid g2" style="margin-top:4px">
+        <ul>
+          <li>SSL/TLS шифрование</li>
+          <li>Защита от DDoS (Cloudflare)</li>
+          <li>WAF и фильтрация запросов</li>
+          <li>Аутентификация через Steam OAuth</li>
+        </ul>
+        <ul>
+          <li>JWT токены и сессии</li>
+          <li>Логирование и мониторинг</li>
+          <li>Rate Limiting и защита от ботов</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">Условные обозначения</div>
+    <div class="legend">
+      <div><b>—&gt; Синхронные запросы</b>HTTP / WebSocket</div>
+      <div><b>- - -&gt; Асинхронные сообщения</b>Очереди / События</div>
+      <div><b>&lt;--&gt; Двустороннее взаимодействие</b>Запрос и ответ в обе стороны</div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">Основные потоки данных</div>
+    <div class="box">
+      <ol class="flows">
+        <li>Пользователь взаимодействует с Frontend</li>
+        <li>Запросы проходят через API Gateway к нужному сервису</li>
+        <li>Сервисы читают / записывают данные в БД, Redis</li>
+        <li>Задачи отправляются в очередь RabbitMQ</li>
+        <li>Steam Service передаёт задачи ботам</li>
+        <li>Боты взаимодействуют со Steam</li>
+        <li>Результат возвращается пользователю</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">Текущая реализация против целевой схемы</div>
+    <div class="box">
+      <table>
+        <thead>
+          <tr><th>Компонент</th><th>Сейчас в проекте</th><th class="st">Статус</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Frontend</td><td>Ванильный JS + morphdom, серверный рендер строк. Вся функциональность на месте, но это не React/TS SPA</td><td class="st"><span class="pill part">частично</span></td></tr>
+          <tr><td>API Gateway</td><td>Роуты Express в одном процессе — единая точка входа есть, отдельного шлюза нет</td><td class="st"><span class="pill part">частично</span></td></tr>
+          <tr><td>Auth Service</td><td>Steam OpenID + сессии в SQLite с HMAC-подписью. JWT не используется</td><td class="st"><span class="pill part">частично</span></td></tr>
+          <tr><td>Upgrade Service</td><td>Полностью: серверный RNG (crypto.randomInt), шансы, история, коэффициенты</td><td class="st"><span class="pill done">есть</span></td></tr>
+          <tr><td>Case Service</td><td>Полностью: взвешенный дроп, цены, вкл/выкл, история открытий</td><td class="st"><span class="pill done">есть</span></td></tr>
+          <tr><td>Inventory Service</td><td>Полностью: site_inventory со статусами active / sold / used</td><td class="st"><span class="pill done">есть</span></td></tr>
+          <tr><td>Payment Service</td><td>Есть внутренний баланс и таблица transactions. Реальных платёжных шлюзов и выводов нет</td><td class="st"><span class="pill todo">план</span></td></tr>
+          <tr><td>Steam Service</td><td>Только профиль и цены скинов. Trade Offer и загрузка инвентаря Steam не реализованы</td><td class="st"><span class="pill part">частично</span></td></tr>
+          <tr><td>Кластер ботов</td><td>В админке есть «боты витрины» для ленты дропов — это не Steam-боты с трейдами</td><td class="st"><span class="pill todo">план</span></td></tr>
+          <tr><td>Админ-панель</td><td>Все 8 разделов реализованы, роли admin / support, журнал действий</td><td class="st"><span class="pill done">готово</span></td></tr>
+          <tr><td>База данных</td><td>PostgreSQL 17 через lib/db.js. SQLite остаётся запасным драйвером (DB_DRIVER). Есть скрипт миграции данных</td><td class="st"><span class="pill done">внедрён</span></td></tr>
+          <tr><td>Redis</td><td>Redis 8 через lib/cache.js: кеш каталога и статистики, rate limiting со счётчиками и TTL, автоматический откат в память при обрыве</td><td class="st"><span class="pill done">внедрён</span></td></tr>
+          <tr><td>RabbitMQ</td><td>lib/queue.js: асинхронные топики drop.broadcast, stats.refresh, audit.write, notify.user с ретраями. Брокер RabbitMQ можно подключить вместо встроенного</td><td class="st"><span class="pill part">очередь есть</span></td></tr>
+          <tr><td>Cloudflare / Nginx</td><td>deploy/nginx.conf: upstream с балансировкой, SSL, limit_req, real_ip от Cloudflare, отдельная локация для SSE. Плюс Dockerfile, docker-compose.yml и кроссплатформенные npm-скрипты</td><td class="st"><span class="pill part">конфиг готов</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,10 +1,8 @@
-
-
 :root {
-  --mint: #1075E0;               
-  --mint2: #44C987;              
-  --cyan: #1AECFF;               
-  --bg: #0A0B0F;                 
+  --mint: #1075E0;
+  --mint2: #44C987;
+  --cyan: #1AECFF;
+  --bg: #0A0B0F;
   --panel: rgba(65, 84, 136, .2);
   --panel-2: #12151f;
   --line: rgba(86, 168, 255, .14);

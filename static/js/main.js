@@ -1,5 +1,5 @@
 const S = {
-  page: 'upgrade', me: null, inventory: [], catalog: [], cases: [], drops: [], online: 0,
+  page: 'upgrade', me: null, inventory: [], inventoryFeed: [], catalog: [], cases: [], drops: [], online: 0,
   tab: 'inventory', from: null, to: null, chance: null, boost: 30, addBalance: 0, turbo: false, spinning: false,
   opening: null, activeCase: null, rouletteItems: [], caseResult: null, upgradeResult: null, caseReveal: false, pointerAngle: 0,
   authModal: false, ageAccepted: false, termsAccepted: false,
@@ -121,6 +121,7 @@ async function boot() {
     if (me.authenticated) {
       const [inventory, profile] = await Promise.all([api('/api/inventory'), api('/api/profile')]);
       S.inventory = inventory.items || [];
+      S.inventoryFeed = inventory.feed || inventory.items || [];
       S.profile = profile;
     }
     render();
@@ -207,8 +208,11 @@ function header() {
     <div class="actions">
       <a class="telegram" href="${esc(S.telegram)}" target="_blank" rel="noopener">${telegramIcon()}</a>
       ${S.me?.authenticated ? `<div class="balance header-balance"><span>Баланс</span><b>${balance}</b><button onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>` : ''}
+      ${S.me?.authenticated && (S.me.user.role === 'admin' || S.me.user.role === 'support')
+        ? `<a class="admin-link ${S.me.user.role === 'support' ? 'is-support' : ''}" href="/admin" title="${S.me.user.role === 'support' ? 'Панель поддержки' : 'Админ-панель'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7.5 3v5.4c0 4.4-3 8.3-7.5 9.6-4.5-1.3-7.5-5.2-7.5-9.6V6L12 3Z"/><path d="M9.2 12.2l2 2 3.6-3.9"/></svg><span>ПАНЕЛЬ</span></a>` : ''}
       ${S.me?.authenticated
-        ? `<button class="profile-trigger" onclick="go('profile')" aria-label="${esc(S.me.user.name || 'Личный профиль')}">${avatarImage(S.me.user)}<i></i></button>`
+        ? `<button id="notification-trigger" class="notification-trigger" type="button" onclick="openNotifications()" aria-label="Уведомления"><img src="/chunks/notificationIcon.svg" alt=""></button>
+           <button id="profile-trigger" class="profile-trigger" type="button" onclick="go('profile')" aria-label="${esc(S.me.user.name || 'Личный профиль')}">${avatarImage(S.me.user)}</button>`
         : `<button class="steam auth-login-button" onclick="login()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>`}
     </div>
   </header>`;
@@ -219,7 +223,10 @@ function sideItem(item) {
   const avatar = player?.avatar
     ? `<img src="${esc(player.avatar)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
     : '<img src="/chunks/logo.svg" alt="">';
-  return `<div class="side-item skin-item" ${rarityStyle(item)}>
+  const gone = item.status && item.status !== 'active';
+  const badge = item.status === 'sold' ? 'ПРОДАНО' : item.status === 'used' ? 'В АПГРЕЙДЕ' : '';
+  return `<div class="side-item skin-item${gone ? ' side-item-gone' : ''}" ${rarityStyle(item)}>
+    ${badge ? `<span class="side-item-badge">${badge}</span>` : ''}
     ${art(item)}
     <div class="side-item-copy">
       <div class="item-name-row">
@@ -235,9 +242,10 @@ function sideItem(item) {
 }
 
 function sidebar() {
+  const feed = (S.inventoryFeed && S.inventoryFeed.length) ? S.inventoryFeed : S.inventory;
   const items = S.tab === 'hot'
-    ? S.inventory.filter(item => Number(item.rarityRank) >= 4)
-    : S.inventory;
+    ? feed.filter(item => Number(item.rarityRank) >= 4)
+    : feed;
   return `<aside class="sidebar">
     <div class="side-head">
       <div class="site-online">
@@ -314,7 +322,8 @@ function upgradePage() {
   let pageCount = Math.max(1, Math.ceil(targets.length / pageSize));
   if (S.targetPage > pageCount) S.targetPage = pageCount;
   const pageTargets = targets.slice((S.targetPage - 1) * pageSize, S.targetPage * pageSize);
-  const chance = S.chance == null ? 0 : S.chance;
+  const chance = clampChance(S.chance);
+  const chanceText = formatChance(S.chance);
   const boostOptions = [['30%', 30], ['50%', 50], ['75%', 75], ['x2', 200], ['x5', 500], ['x10', 1000]];
   const boostButtons = boostOptions.map(([label, value]) => `<button class="${S.boost === value ? 'active' : ''}" ${S.from ? '' : 'disabled'} onclick="setBoost(${value})">${label}</button>`).join('');
   const balanceCents = Number(S.me.user.balanceCents || 0);
@@ -342,15 +351,14 @@ function upgradePage() {
           <div class="add-balance-max"><span>Макс.</span><div>${coinIcon('1.6rem', '#9AA29F')}<b>${money(balanceCents)}</b></div></div>
         </div>
       </div>
-      <div class="wheelbox">
-        <div class="wheelhead"><span>ШАНС АПГРЕЙДА</span><b>${chance}%</b></div>
-        <div class="wheel-stage"><div class="wheel" style="--chance:${chance}%;--chance-half:${chance / 2}%">
+      <div class="wheelbox${S.spinning ? ' is-spinning' : ''}">
+        <div class="wheelhead"><span>ШАНС АПГРЕЙДА</span><b>${chanceText}</b></div>
+        <div class="wheel-stage"><div class="wheel${S.spinning ? ' is-spinning' : ''}" style="--chance:${chance}%;--chance-half:${(chance / 2).toFixed(3)}%">
           <img class="spinner-ring spinner-ring-2" src="/chunks/spinner-group-2.webp" alt="" aria-hidden="true">
           <img class="spinner-ring spinner-ring-1" src="/chunks/spinner-group-1.webp" alt="" aria-hidden="true">
-          <span class="wheel-tick tick-100">100%</span><span class="wheel-tick tick-0">0%</span><span class="wheel-tick tick-50l">50%</span><span class="wheel-tick tick-50r">50%</span>
           <img class="spinner-center" src="/chunks/spinner-group-3.webp" alt="" aria-hidden="true">
           <img class="spinner-logo" src="/chunks/logo.svg" alt="" aria-hidden="true">
-          <div class="wheelcenter"><strong>${chance ? Number(chance).toFixed(2) + '%' : '0%'}</strong><span>${chance ? 'Средний шанс' : 'выберите предметы'}</span></div>
+          <div class="wheelcenter"><strong>${chanceText}</strong><span>${S.chance == null ? 'выберите предметы' : 'шанс апгрейда'}</span></div>
         </div><div class="pointer-orbit" style="--angle:${Number(S.pointerAngle) || 0}deg" aria-hidden="true"><img class="pointer" src="/chunks/spinner-arrow.webp" alt=""></div></div>
         <button class="upgrade" ${!S.from || !S.to || S.spinning ? 'disabled' : ''} onclick="upgrade()">
           <img class="upgrade-icon" src="/chunks/upgrade.svg" alt="">${S.spinning ? 'АПГРЕЙД...' : 'АПГРЕЙД'}
@@ -414,7 +422,7 @@ async function sellSelectedItems() {
       const result = await api(`/api/inventory/${encodeURIComponent(item.assetid)}/sell`, { method: 'POST' });
       sold++;
       amount += Number(result.amountCents || 0);
-    } catch (error) { /* продолжаем */ }
+    } catch (error) {  }
   }
   S.sellMode = false;
   S.sellSelected.clear();
@@ -511,7 +519,7 @@ function stealPage() {
 }
 
 function profileEmptyState(title, subtitle, buttonText, action) {
-  return `<div class="profile-tab-empty"><div class="pte-copy"><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/caseGreenIcon.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
+  return `<div class="profile-tab-empty"><div class="pte-copy"><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div><button onclick="${action}"><img src="/chunks/cases.svg" alt=""><span>${esc(buttonText)}</span></button></div>`;
 }
 function sortIconSVG() {
   return '<svg class="profile-sort-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4v13M7 17l-3-3M7 17l3-3M17 20V7M17 7l-3 3M17 7l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -559,25 +567,42 @@ function historyCard(item) {
     <span class="skin-price">${coinPrice(item.priceCents)}</span>${rarityLine()}
   </div>`;
 }
-function upgradeCard(row) {
-  const fromName = String(row.fromName || 'Предмет').split(' | ')[0];
-  const fromSkin = String(row.fromName || '').split(' | ')[1] || '';
-  const toName = String(row.toName || '').split(' | ')[0];
-  const toSkin = String(row.toName || '').split(' | ')[1] || '';
-  const won = !!row.won;
-  const icon = won ? (row.toIcon || '') : (row.fromIcon || '');
-  const img = icon ? `<img src="${esc(bust(icon))}" alt="" loading="lazy" onerror="this.onerror=null;this.classList.add('img-failed')">` : '';
-  const price = won ? row.toPriceCents : row.fromPriceCents;
-  return `<div class="profile-upgrade-card ${won ? 'won' : 'lost'}">
-    <div class="art">${img}</div>
-    <div class="upg-copy">
-      <strong>${esc(won ? toName : fromName)}</strong>
-      <small>${esc(won ? toSkin : fromSkin)}</small>
-      <span class="upg-chance">Шанс: ${Number(row.chance || 0).toFixed(1)}%</span>
-      <b>${coinPrice(price)}</b>
-    </div>
-    <em class="upg-result ${won ? 'ok' : 'no'}">${won ? 'УСПЕХ' : 'НЕ УДАЛОСЬ'}</em>
+function upgradeSlot(data, fallbackName) {
+  const item = data || {};
+  const weapon = item.weapon || String(item.name || fallbackName || '').split(' | ')[0] || '';
+  const skin = item.skin || String(item.name || '').split(' | ')[1] || '';
+  return `<div class="upg-slot skin-item" ${rarityStyle(item)}>
+    <span class="skin-price">${coinPrice(item.priceCents)}</span>
+    ${art(item)}
+    <strong>${esc(weapon)}</strong>
+    <small>${esc(skin)}</small>
+    <i class="skin-rarity-line"></i>
   </div>`;
+}
+function upgradeCard(row) {
+  const won = !!row.won;
+  const from = row.from || { name: row.fromName, icon: row.fromIcon, priceCents: row.fromPriceCents };
+  const to = row.to || { name: row.toName, icon: row.toIcon, priceCents: row.toPriceCents };
+  const chance = Number(row.chance || 0);
+  const title = to.weapon || String(to.name || '').split(' | ')[0] || 'Апгрейд';
+  return `<div class="profile-upgrade-card ${won ? 'won' : 'lost'}">
+    <div class="upg-head">${esc(title)}</div>
+    <div class="upg-body">
+      ${upgradeSlot(from, row.fromName)}
+      <span class="upg-arrow" aria-hidden="true">›</span>
+      ${upgradeSlot(to, row.toName)}
+    </div>
+    <div class="upg-foot">
+      <span class="upg-chance">Шанс ${chance.toFixed(2)}%</span>
+      <em class="upg-result">${won ? 'Выигрыш' : 'Проигрыш'}</em>
+    </div>
+  </div>`;
+}
+const ROLE_LABELS = { admin: 'Администратор', support: 'Поддержка' };
+function roleBadge(role) {
+  const label = ROLE_LABELS[role];
+  if (!label) return '';
+  return `<span class="role-badge role-${esc(role)}">${label}</span>`;
 }
 function profilePage() {
   if (!S.me?.authenticated) return loginRequired('ЛИЧНЫЙ ПРОФИЛЬ', 'Авторизуйтесь через Steam, чтобы открыть профиль.');
@@ -604,7 +629,7 @@ function profilePage() {
   return `<section class="profile-page">
     <div class="profile-summary-grid">
       <article class="profile-user-card">
-        <div class="profile-identity">${avatar}<div><h1>${esc(user.name || 'Игрок')}</h1><span>ID: ${esc(user.steamid || user.id || '')}</span></div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid || '')}" target="_blank" rel="noopener" aria-label="Steam">${steamIcon()}</a><button onclick="openSettings()" title="Настройки"><img src="/chunks/settingIcon.svg" alt="Настройки"></button><button onclick="logout()" title="Выйти"><img src="/chunks/exitIconGray.svg" alt="Выйти"></button></div></div>
+        <div class="profile-identity">${avatar}<div><h1>${esc(user.name || 'Игрок')}</h1><span>ID: ${esc(user.steamid || user.id || '')}</span>${roleBadge(user.role)}</div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid || '')}" target="_blank" rel="noopener" aria-label="Steam">${steamIcon()}</a><button onclick="openSettings()" title="Настройки"><img src="/chunks/settingIcon.svg" alt="Настройки"></button><button onclick="logout()" title="Выйти"><img src="/chunks/exitIconGray.svg" alt="Выйти"></button></div></div>
         <div class="profile-balance-label">Баланс</div><div class="profile-balance"><strong>${coinPrice(profile.balanceCents)}</strong><button type="button" onclick="openPayment()" aria-label="Пополнить баланс">+</button></div>
         <div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened || 0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade || 0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продажи</span></div></div>
       </article>
@@ -737,6 +762,10 @@ function render() {
   if (window.morphdom) {
     morphdom(app, `<div class="app-root">${html}</div>`, {
       childrenOnly: true,
+      getNodeKey(node) {
+        if (node && node.nodeType === 1 && node.id) return node.id;
+        return undefined;
+      },
       onBeforeElUpdated(fromEl, toEl) {
         if (!fromEl || fromEl.nodeType !== 1 || !toEl) return;
         if (fromEl === document.activeElement && (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA' || fromEl.tagName === 'SELECT')) return false;
@@ -778,12 +807,27 @@ function ensureImages() {
 }
 
 function upgradeBaseValue() {
-  return (S.from ? Number(S.from.priceCents) : 0) + S.addBalance;
+  return (S.from ? Number(S.from.priceCents) : 0) + Number(S.addBalance || 0);
+}
+function clampChance(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(100, Math.max(0, number));
+}
+function formatChance(value) {
+  if (value == null) return '0%';
+  const chance = clampChance(value);
+  if (chance <= 0) return '0%';
+  if (chance >= 100) return '100%';
+
+  return `${Number(chance.toFixed(2))}%`;
 }
 function recalculateChance() {
   const value = upgradeBaseValue();
-  if (!S.from || !S.to) { S.chance = null; return; }
-  S.chance = Math.min(100, Math.max(0, Math.floor(value / Number(S.to.priceCents) * 10000) / 100));
+  const targetPrice = S.to ? Number(S.to.priceCents) : 0;
+  if (!S.from || !S.to || !Number.isFinite(targetPrice) || targetPrice <= 0) { S.chance = null; return; }
+
+  S.chance = clampChance(Math.floor(value / targetPrice * 10000) / 100);
 }
 function boostMinimumPrice(baseValue, boost) {
   return boost >= 100
@@ -865,14 +909,13 @@ async function sellItem(id) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
-
-
 async function refreshAccount() {
   const [me, inventory, cases, drops, profile, stats] = await Promise.all([
     api('/api/me'), api('/api/inventory'), api('/api/cases'), api('/api/live-drops'), api('/api/profile'), api('/api/stats')
   ]);
   S.me = me;
   S.inventory = inventory.items || [];
+  S.inventoryFeed = inventory.feed || inventory.items || [];
   S.cases = cases.cases || [];
   S.drops = drops;
   S.profile = profile;
@@ -945,9 +988,13 @@ function applyPointerAngle(deg) {
 
 function startPointerSpin() {
   if (pointerRaf) cancelAnimationFrame(pointerRaf);
-  const step = () => {
-    if (!S.spinning) return;
-    pointerCurrent = (pointerCurrent + 8) % 360;
+  let last = performance.now();
+  const step = now => {
+    if (!S.spinning) { pointerRaf = null; return; }
+    const dt = Math.min(64, now - last);
+    last = now;
+
+    pointerCurrent += dt * 0.54;
     applyPointerAngle(pointerCurrent);
     pointerRaf = requestAnimationFrame(step);
   };
@@ -955,18 +1002,24 @@ function startPointerSpin() {
 }
 
 function pointerLanding(won, chance) {
-  const half = Math.max(0, (Number(chance) || 0) * 1.8);
+  const value = clampChance(chance);
+  const half = value * 1.8;
   const rand = (min, max) => min + Math.random() * (max - min);
+  const margin = 1.2;
   let target;
   if (won) {
-    const inner = Math.max(1.5, half - 5);
-    target = rand(-inner, inner);
+    const inner = Math.max(0, half - margin);
+    target = inner > 0 ? rand(-inner, inner) : 0;
   } else {
-    const darkHalf = Math.max(8, 180 - half - 8);
-    target = 180 + rand(-darkHalf, darkHalf);
+    const lossHalf = Math.max(0, 180 - half - margin);
+    target = lossHalf > 0 ? 180 + rand(-lossHalf, lossHalf) : 180;
   }
   target = ((target % 360) + 360) % 360;
-  return 4 * 360 + target;
+
+  const current = ((pointerCurrent % 360) + 360) % 360;
+  let delta = target - current;
+  while (delta <= 0) delta += 360;
+  return pointerCurrent + 4 * 360 + delta;
 }
 
 function spinPointerTo(total, duration = 2400) {
@@ -976,13 +1029,18 @@ function spinPointerTo(total, duration = 2400) {
     const start = pointerCurrent;
     const delta = total - start;
     const t0 = performance.now();
-    const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const ease = t => 1 - Math.pow(1 - t, 3);
     const step = now => {
       const t = Math.min(1, (now - t0) / duration);
       pointerCurrent = start + delta * ease(t);
       applyPointerAngle(pointerCurrent);
       if (t < 1) pointerRaf = requestAnimationFrame(step);
-      else { pointerRaf = null; resolve(); }
+      else {
+        pointerCurrent = total;
+        applyPointerAngle(pointerCurrent);
+        pointerRaf = null;
+        resolve();
+      }
     };
     pointerRaf = requestAnimationFrame(step);
   });
@@ -998,6 +1056,17 @@ async function upgrade() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fromAssetId: S.from.assetid, toCatalogId: S.to.catalogId, boostPercent: S.boost, addBalanceCents: S.addBalance })
     });
+
+    S.chance = clampChance(result.chance);
+    const wheelEl = document.querySelector('.wheel');
+    if (wheelEl) {
+      wheelEl.style.setProperty('--chance', S.chance + '%');
+      wheelEl.style.setProperty('--chance-half', (S.chance / 2).toFixed(3) + '%');
+    }
+    const headEl = document.querySelector('.wheelhead b');
+    if (headEl) headEl.textContent = formatChance(S.chance);
+    const centerEl = document.querySelector('.wheelcenter strong');
+    if (centerEl) centerEl.textContent = formatChance(S.chance);
     await new Promise(resolve => setTimeout(resolve, S.turbo ? 250 : 700));
     const total = pointerLanding(!!result.won, result.chance);
     await spinPointerTo(total, S.turbo ? 1400 : 2400);
@@ -1132,6 +1201,35 @@ function setFooterLang(code) {
   render();
 }
 
+function chatDayLabel(ts) {
+  const date = new Date(Number(ts));
+  const today = new Date();
+  const yesterday = new Date(Date.now() - 86400000);
+  const same = (a, b) => a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
+  if (same(date, today)) return 'Сегодня';
+  if (same(date, yesterday)) return 'Вчера';
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long' });
+}
+function chatBubbles(rows) {
+  let html = '';
+  let lastDay = '';
+  for (const row of rows) {
+    const day = chatDayLabel(row.createdAt);
+    if (day !== lastDay) {
+      lastDay = day;
+      html += `<div class="chat-day-sep"><span>${esc(day)}</span></div>`;
+    }
+    const time = new Date(Number(row.createdAt)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    html += `<div class="chat-line ${row.fromStaff ? 'from-staff' : 'from-me'}">
+      <div class="chat-bubble">
+        ${row.fromStaff ? '<b class="chat-author">Поддержка</b>' : ''}
+        <p>${esc(row.message)}</p>
+        <time>${esc(time)}</time>
+      </div>
+    </div>`;
+  }
+  return html;
+}
 async function loadChat() {
   if (!S.chatEmailReady) return;
   if (!S.me?.authenticated) {
@@ -1140,9 +1238,11 @@ async function loadChat() {
   }
   try {
     const rows = await api('/api/support/messages');
-    $('#chatbody').innerHTML = rows.length
-      ? rows.map(item => `<div class="support-message">${esc(item.message)}</div>`).join('')
+    const body = $('#chatbody');
+    body.innerHTML = rows.length
+      ? chatBubbles(rows)
       : `<div class="support-welcome">Как мы можем вам помочь с ${esc(S.brand)}?</div>`;
+    body.scrollTop = body.scrollHeight;
   } catch (error) {
     $('#chatbody').textContent = error.message;
   }
@@ -1330,4 +1430,7 @@ Object.assign(window, {
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
   closeUpgradeResult, closeCaseReveal, openInventory
 });
+if (typeof window.openNotifications !== 'function') {
+  window.openNotifications = () => {};
+}
 boot();

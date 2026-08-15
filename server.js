@@ -1,14 +1,13 @@
 'use strict';
 
 const express = require('express');
-const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT']);
+  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
   for (const line of localEnv.split(/\r?\n/)) {
     const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
     if (!match || !allowed.has(match[1]) || process.env[match[1]]) continue;
@@ -403,14 +402,37 @@ const CASES = [
 ];
 const CASES_BY_ID = new Map(CASES.map(item => [item.id, item]));
 
+const RATE_LIMIT = Number(process.env.RATE_LIMIT || 120);
+const RATE_WINDOW = Number(process.env.RATE_WINDOW || 60);
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  if (req.path === '/api/events') return next();
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'local';
+  const count = cache.hit(`rl:${ip}`, RATE_WINDOW);
+  res.setHeader('X-RateLimit-Limit', RATE_LIMIT);
+  res.setHeader('X-RateLimit-Remaining', Math.max(0, RATE_LIMIT - count));
+  if (count > RATE_LIMIT) {
+    res.setHeader('Retry-After', RATE_WINDOW);
+    return res.status(429).json({ error: 'Слишком много запросов, попробуйте позже' });
+  }
+  next();
+});
 app.use(express.json({ limit: '128kb' }));
 app.use(express.urlencoded({ extended: false }));
 app.get('/favicon.ico', (_, res) => res.type('svg').sendFile(path.join(__dirname, 'favicon.svg')));
+app.get(['/admin', '/admin.html'], (req, res) => {
+  const account = currentUser(req);
+  if (!account || !isStaff(account)) return res.status(404).sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
 app.use(express.static(__dirname, { index: 'index.html' }));
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const db = require('./lib/db');
+const cache = require('./lib/cache');
+console.log(`[db] ${db.describe()}`);
+setTimeout(() => console.log(`[cache] ${cache.describe()}`), 300);
+const { createQueue } = require('./lib/queue');
+const queue = createQueue({ cache });
 db.exec(`
   CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -489,9 +511,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_case_openings_user ON case_openings(user_id, case_id);
 `);
 
+function tableColumns(table) {
+  if (db.driver === 'postgres') {
+    return db.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?')
+      .all(table).map(row => row.name);
+  }
+  return db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+}
 function ensureColumn(table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!columns.some(row => row.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  if (tableColumns(table).includes(column)) return;
+  const sql = db.driver === 'postgres'
+    ? definition.replace(/\bREAL\b/gi, 'DOUBLE PRECISION').replace(/\b(INTEGER|DATETIME)\b/gi, 'BIGINT')
+    : definition;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${sql}`);
 }
 ensureColumn('live_drops', 'rarity', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('live_drops', 'rarity_color', "TEXT NOT NULL DEFAULT '#74ffca'");
@@ -502,6 +534,123 @@ ensureColumn('users', 'profile_privacy', "TEXT NOT NULL DEFAULT 'private'");
 ensureColumn('users', 'streamer_mode', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'nickname_custom', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'support_email', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'user'");
+ensureColumn('users', 'banned', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'ban_reason', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'is_bot', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'luck_modifier', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('support_messages', 'from_staff', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('support_messages', 'staff_id', 'INTEGER');
+ensureColumn('support_messages', 'read_at', 'INTEGER');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS transactions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS admin_logs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    admin_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS promo_codes(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'balance',
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    max_uses INTEGER NOT NULL DEFAULT 0,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS promo_redemptions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    promo_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(promo_id, user_id)
+  );
+  CREATE TABLE IF NOT EXISTS case_overrides(
+    case_id TEXT PRIMARY KEY,
+    price_cents INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_support_user ON support_messages(user_id, id DESC);
+`);
+
+const ADMIN_STEAMIDS = String(process.env.ADMIN_STEAMIDS || '').split(',').map(v => v.trim()).filter(Boolean);
+const SUPPORT_STEAMIDS = String(process.env.SUPPORT_STEAMIDS || '').split(',').map(v => v.trim()).filter(Boolean);
+if (ADMIN_STEAMIDS.length) {
+  const mark = db.prepare("UPDATE users SET role = 'admin' WHERE steamid = ? AND role <> 'admin'");
+  for (const id of ADMIN_STEAMIDS) mark.run(id);
+}
+if (SUPPORT_STEAMIDS.length) {
+  const mark = db.prepare("UPDATE users SET role = 'support' WHERE steamid = ? AND role = 'user'");
+  for (const id of SUPPORT_STEAMIDS) mark.run(id);
+}
+
+function settingGet(key, fallback) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  if (!row) return fallback;
+  const number = Number(row.value);
+  return Number.isFinite(number) ? number : fallback;
+}
+function settingSet(key, value) {
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, String(value));
+}
+function roleOf(account) {
+  if (!account) return 'user';
+  if (ADMIN_STEAMIDS.includes(String(account.steamid))) return 'admin';
+  return account.role || 'user';
+}
+function isAdmin(account) { return roleOf(account) === 'admin'; }
+function isStaff(account) { const r = roleOf(account); return r === 'admin' || r === 'support'; }
+function recordTransaction(userId, kind, amountCents, balanceAfter, note = '', now = Date.now()) {
+  db.prepare('INSERT INTO transactions(user_id,kind,amount_cents,balance_after,note,created_at) VALUES(?,?,?,?,?,?)')
+    .run(userId, kind, amountCents, balanceAfter, note, now);
+}
+function adminLog(account, action, target = '', details = '') {
+  queue.publish('audit.write', {
+    adminId: account.id,
+    adminName: account.name,
+    action,
+    target: String(target),
+    details: String(details),
+    createdAt: Date.now()
+  });
+}
+function requireAdmin(req, res, next) {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Требуется авторизация' });
+  if (!isAdmin(account)) return res.status(403).json({ error: 'Недостаточно прав' });
+  req.account = account;
+  next();
+}
+function requireStaff(req, res, next) {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Требуется авторизация' });
+  if (!isStaff(account)) return res.status(403).json({ error: 'Недостаточно прав' });
+  req.account = account;
+  next();
+}
 
 const clients = new Set();
 function cleanSessions() { db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()); }
@@ -629,6 +778,23 @@ function inventoryRows(userId) {
     wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
   }));
 }
+function inventoryFeedRows(userId, limit = 60) {
+  return db.prepare(`
+    SELECT id AS assetid, catalog_id AS catalogId, item_name AS name,
+      weapon_name AS weapon, skin_name AS skin, skin_name AS marketName,
+      item_icon AS icon, price_cents AS priceCents, rarity,
+      rarity_color AS rarityColor, rarity_rank AS rarityRank,
+      source, status, created_at AS createdAt
+    FROM site_inventory
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(userId, limit).map(row => withSteamIcon({
+    ...row,
+    assetid: String(row.assetid),
+    wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
+  }));
+}
 function insertInventoryItem(userId, catalog, source, now = Date.now()) {
   const result = db.prepare(`
     INSERT INTO site_inventory(
@@ -641,14 +807,30 @@ function insertInventoryItem(userId, catalog, source, now = Date.now()) {
   );
   return Number(result.lastInsertRowid);
 }
-function pickWeighted(contents) {
-  const total = contents.reduce((sum, [, weight]) => sum + weight, 0);
+function pickWeighted(contents, account = null) {
+  const globalLuck = settingGet('case_luck', 0);
+  const userLuck = account ? Number(account.luck_modifier || 0) : 0;
+  const luck = Math.max(-90, Math.min(300, globalLuck + userLuck));
+  const ranked = contents.map(([id, weight]) => {
+    const item = CATALOG_BY_ID.get(id);
+    return { id, weight, price: Number(item?.priceCents || 0) };
+  });
+  const prices = ranked.map(row => row.price);
+  const maxPrice = Math.max(1, ...prices);
+  const minPrice = Math.min(...prices);
+  const span = Math.max(1, maxPrice - minPrice);
+  const adjusted = ranked.map(row => {
+    const rarityShare = (row.price - minPrice) / span;
+    const factor = 1 + (luck / 100) * rarityShare;
+    return [row.id, Math.max(0.0001, row.weight * factor)];
+  });
+  const total = adjusted.reduce((sum, [, weight]) => sum + weight, 0);
   let point = crypto.randomInt(0, 1000000) / 1000000 * total;
-  for (const [id, weight] of contents) {
+  for (const [id, weight] of adjusted) {
     point -= weight;
     if (point < 0) return CATALOG_BY_ID.get(id);
   }
-  return CATALOG_BY_ID.get(contents[contents.length - 1][0]);
+  return CATALOG_BY_ID.get(adjusted[adjusted.length - 1][0]);
 }
 function dropPayload(row) {
   return {
@@ -666,6 +848,8 @@ function dropPayload(row) {
   };
 }
 function addLiveDrop(userName, item, source, now = Date.now()) {
+  cache.del('drops:latest');
+  cache.del('stats:global');
   const result = db.prepare(`
     INSERT INTO live_drops(user_name,item_name,item_icon,price_cents,rarity,rarity_color,rarity_rank,source,created_at)
     VALUES(?,?,?,?,?,?,?,?,?)
@@ -676,13 +860,16 @@ function caseView(caseData, userId) {
   const opened = userId && caseData.once
     ? !!db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(userId, caseData.id)
     : false;
+  const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
+  const enabled = override ? !!override.enabled : true;
   return {
     id: caseData.id,
     name: caseData.name,
     description: caseData.description,
-    priceCents: caseData.priceCents,
+    priceCents: override && override.price_cents != null ? Number(override.price_cents) : caseData.priceCents,
     once: !!caseData.once,
-    available: !opened,
+    enabled,
+    available: !opened && enabled,
     contents: caseData.contents.map(([id, weight]) => ({ ...publicCatalogItem(CATALOG_BY_ID.get(id)), weight }))
   };
 }
@@ -730,13 +917,32 @@ app.post('/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+queue.on('drop.broadcast', payload => {
+  cache.del('drops:latest');
+  broadcast('drop', payload);
+});
+queue.on('stats.refresh', () => {
+  cache.del('stats:global');
+});
+queue.on('audit.write', payload => {
+  db.prepare('INSERT INTO admin_logs(admin_id,admin_name,action,target,details,created_at) VALUES(?,?,?,?,?,?)')
+    .run(payload.adminId, payload.adminName, payload.action, payload.target, payload.details, payload.createdAt || Date.now());
+});
+queue.on('notify.user', payload => {
+  broadcast('notify', payload);
+});
+
 app.get('/api/config', (_, res) => res.json({ brand: BRAND_NAME, telegram: TELEGRAM_URL }));
 app.get('/api/stats', (_, res) => {
-  res.json({
+  const cached = cache.get('stats:global');
+  if (cached) return res.json(cached);
+  const payload = {
     totalPlayers: db.prepare('SELECT COUNT(*) AS count FROM users').get().count,
     casesOpened: db.prepare('SELECT COUNT(*) AS count FROM case_openings').get().count,
     upgradesMade: db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds').get().count
-  });
+  };
+  cache.set('stats:global', payload, 15);
+  res.json(payload);
 });
 app.get('/api/me', async (req, res) => {
   let account = currentUser(req);
@@ -754,7 +960,8 @@ app.get('/api/me', async (req, res) => {
     authenticated: true,
     user: {
       id: account.id, steamid: account.steamid, name: account.name,
-      avatar: account.avatar, balanceCents: account.balance_cents
+      avatar: account.avatar, balanceCents: account.balance_cents,
+      role: roleOf(account), banned: !!account.banned, banReason: account.ban_reason || ''
     }
   });
 });
@@ -775,20 +982,46 @@ app.get('/api/profile', (req, res) => {
     FROM site_inventory WHERE user_id = ? ORDER BY id DESC LIMIT 40
   `).all(account.id).map(row => withSteamIcon({ ...row, assetid: String(row.assetid) }));
   const upgradeRows = db.prepare(`
-    SELECT ur.id, ur.chance, ur.won, ur.created_at AS createdAt,
-      fi.item_name AS fromName, fi.item_icon AS fromIcon, fi.price_cents AS fromPriceCents,
-      ti.item_name AS toName, ti.item_icon AS toIcon, ti.price_cents AS toPriceCents
+    SELECT ur.id, ur.chance, ur.won, ur.created_at AS createdAt, ur.target_catalog_id AS targetCatalogId,
+      fi.item_name AS fromName, fi.weapon_name AS fromWeapon, fi.skin_name AS fromSkin,
+      fi.item_icon AS fromIcon, fi.price_cents AS fromPriceCents,
+      fi.rarity AS fromRarity, fi.rarity_color AS fromRarityColor,
+      ti.item_name AS toName, ti.weapon_name AS toWeapon, ti.skin_name AS toSkin,
+      ti.item_icon AS toIcon, ti.price_cents AS toPriceCents,
+      ti.rarity AS toRarity, ti.rarity_color AS toRarityColor
     FROM upgrade_rounds ur
     LEFT JOIN site_inventory fi ON fi.id = ur.from_item_id
     LEFT JOIN site_inventory ti ON ti.id = ur.result_item_id
     WHERE ur.user_id = ? ORDER BY ur.id DESC LIMIT 30
-  `).all(account.id).map(row => withSteamIcon(row));
+  `).all(account.id).map(row => {
+    const target = CATALOG_BY_ID.get(String(row.targetCatalogId || '')) || null;
+    const from = withSteamIcon({
+      name: row.fromName, weapon: row.fromWeapon, skin: row.fromSkin,
+      icon: row.fromIcon, priceCents: row.fromPriceCents,
+      rarity: row.fromRarity, rarityColor: row.fromRarityColor
+    });
+    const to = withSteamIcon({
+      name: row.toName || target?.name || '',
+      weapon: row.toWeapon || target?.weapon || '',
+      skin: row.toSkin || target?.skin || '',
+      icon: row.toIcon || target?.icon || '',
+      priceCents: row.toPriceCents != null ? row.toPriceCents : (target?.priceCents || 0),
+      rarity: row.toRarity || target?.rarity || '',
+      rarityColor: row.toRarityColor || target?.rarityColor || ''
+    });
+    return {
+      id: row.id, chance: row.chance, won: !!row.won, createdAt: row.createdAt,
+      from, to,
+      fromName: row.fromName, fromIcon: from.icon, fromPriceCents: row.fromPriceCents,
+      toName: to.name, toIcon: to.icon, toPriceCents: to.priceCents
+    };
+  });
   const casesOpened = db.prepare('SELECT COUNT(*) AS count FROM case_openings WHERE user_id = ?').get(account.id).count;
   const upgradesMade = db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds WHERE user_id = ?').get(account.id).count;
   const sold = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents),0) AS total FROM inventory_sales WHERE user_id = ?').get(account.id);
   const activeItems = db.prepare("SELECT COUNT(*) AS count FROM site_inventory WHERE user_id = ? AND status = 'active'").get(account.id).count;
   res.json({
-    user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar },
+    user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar, role: roleOf(account) },
     balanceCents: account.balance_cents,
     withdrawnCents: 0,
     activeItems,
@@ -837,11 +1070,17 @@ app.post('/api/settings', (req, res) => {
   `).run(nickname, tradeLink, privacy, streamerMode ? 1 : 0, Date.now(), account.id);
   res.json({ ok: true, nickname, tradeLink, privacy, streamerMode });
 });
-app.get('/api/catalog', (_, res) => res.json(CATALOG.map(publicCatalogItem)));
+app.get('/api/catalog', (_, res) => {
+  const cached = cache.get('catalog:public');
+  if (cached) return res.json(cached);
+  const payload = CATALOG.map(publicCatalogItem);
+  cache.set('catalog:public', payload, 300);
+  res.json(payload);
+});
 app.get('/api/inventory', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ authenticated: false });
-  res.json({ authenticated: true, items: inventoryRows(account.id) });
+  res.json({ authenticated: true, items: inventoryRows(account.id), feed: inventoryFeedRows(account.id) });
 });
 app.post('/api/inventory/:id/sell', (req, res) => {
   const account = currentUser(req);
@@ -862,6 +1101,7 @@ app.post('/api/inventory/:id/sell', (req, res) => {
       db.prepare('INSERT INTO inventory_sales(user_id,inventory_item_id,amount_cents,created_at) VALUES(?,?,?,?)')
         .run(account.id, itemId, item.price_cents, now);
       const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      recordTransaction(account.id, 'item_sale', item.price_cents, balance, item.item_name, now);
       return { amountCents: item.price_cents, balanceCents: balance };
     })();
     res.json({ ok: true, ...result });
@@ -876,31 +1116,40 @@ app.get('/api/cases', (req, res) => {
 app.post('/api/cases/open', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
   const caseData = CASES_BY_ID.get(String(req.body?.caseId || ''));
   if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
+  const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
+  if (override && !override.enabled) return res.status(403).json({ error: 'Кейс временно отключён' });
+  const casePrice = override && override.price_cents != null ? Number(override.price_cents) : caseData.priceCents;
 
   try {
     const result = db.transaction(() => {
       if (caseData.once && db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(account.id, caseData.id)) {
         throw new Error('Стартовый кейс уже был открыт');
       }
-      if (caseData.priceCents > 0) {
+      if (casePrice > 0) {
         const charged = db.prepare(`
           UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
           WHERE id = ? AND balance_cents >= ?
-        `).run(caseData.priceCents, Date.now(), account.id, caseData.priceCents);
+        `).run(casePrice, Date.now(), account.id, casePrice);
         if (!charged.changes) throw new Error('Недостаточно средств на балансе');
       }
-      const won = pickWeighted(caseData.contents);
+      const won = pickWeighted(caseData.contents, account);
       const now = Date.now();
       const inventoryId = insertInventoryItem(account.id, won, `case:${caseData.id}`, now);
       db.prepare('INSERT INTO case_openings(user_id,case_id,inventory_item_id,cost_cents,created_at) VALUES(?,?,?,?,?)')
-        .run(account.id, caseData.id, inventoryId, caseData.priceCents, now);
+        .run(account.id, caseData.id, inventoryId, casePrice, now);
+      if (casePrice > 0) {
+        const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+        recordTransaction(account.id, 'case_open', -casePrice, after, caseData.name, now);
+      }
       const drop = addLiveDrop(account.name, won, 'case', now);
       const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
       return { won: { ...won, assetid: String(inventoryId) }, drop, balanceCents: balance };
     })();
-    broadcast('drop', result.drop);
+    queue.publish('drop.broadcast', result.drop);
+    queue.publish('stats.refresh', {});
     res.json({ ok: true, item: result.won, balanceCents: result.balanceCents });
   } catch (error) {
     res.status(400).json({ error: error.message || 'Не удалось открыть кейс' });
@@ -910,6 +1159,7 @@ app.post('/api/cases/open', (req, res) => {
 app.post('/api/upgrade', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
   const fromId = Number(req.body?.fromAssetId);
   const target = CATALOG_BY_ID.get(String(req.body?.toCatalogId || ''));
   const boostPercent = Number(req.body?.boostPercent || 30);
@@ -930,10 +1180,15 @@ app.post('/api/upgrade', (req, res) => {
       if (addBalanceCents > 0) {
         db.prepare('UPDATE users SET balance_cents = balance_cents - ?, updated_at = ? WHERE id = ?')
           .run(addBalanceCents, Date.now(), account.id);
+        const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+        recordTransaction(account.id, 'upgrade_stake', -addBalanceCents, after, 'Ставка в апгрейде');
       }
-      const chance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
+      const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
+      const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(account.luck_modifier || 0)));
+      const effectiveChance = Math.min(100, Math.max(0, baseChance * (1 + luck / 100)));
+      const chance = baseChance;
       const roll = crypto.randomInt(0, 1000000) / 10000;
-      const won = roll < chance;
+      const won = roll < effectiveChance;
       const now = Date.now();
       db.prepare("UPDATE site_inventory SET status = 'used', updated_at = ? WHERE id = ?").run(now, fromId);
       let resultItemId = null;
@@ -956,7 +1211,8 @@ app.post('/api/upgrade', (req, res) => {
         drop
       };
     })();
-    if (result.drop) broadcast('drop', result.drop);
+    if (result.drop) queue.publish('drop.broadcast', result.drop);
+    queue.publish('stats.refresh', {});
     res.json({ ok: true, won: result.won, chance: result.chance, boostPercent: result.boostPercent, addBalanceCents: result.addBalanceCents, item: result.item });
   } catch (error) {
     res.status(400).json({ error: error.message || 'Не удалось выполнить апгрейд' });
@@ -964,8 +1220,12 @@ app.post('/api/upgrade', (req, res) => {
 });
 
 app.get('/api/live-drops', (_, res) => {
+  const cached = cache.get('drops:latest');
+  if (cached) return res.json(cached);
   const rows = db.prepare('SELECT * FROM live_drops ORDER BY created_at DESC LIMIT 30').all();
-  res.json(rows.map(dropPayload));
+  const payload = rows.map(dropPayload);
+  cache.set('drops:latest', payload, 5);
+  res.json(payload);
 });
 app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -980,6 +1240,409 @@ app.get('/api/events', (req, res) => {
   });
 });
 app.get('/api/online', (_, res) => res.json({ online: clients.size }));
+
+app.get('/api/promo/redeem', (_, res) => res.status(405).json({ error: 'Используйте POST' }));
+app.post('/api/promo/redeem', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: 'Введите промокод' });
+  try {
+    const result = db.transaction(() => {
+      const promo = db.prepare('SELECT * FROM promo_codes WHERE code = ?').get(code);
+      if (!promo || !promo.active) throw new Error('Промокод не найден');
+      if (promo.expires_at && promo.expires_at < Date.now()) throw new Error('Срок действия промокода истёк');
+      if (promo.max_uses > 0 && promo.used_count >= promo.max_uses) throw new Error('Лимит активаций исчерпан');
+      const already = db.prepare('SELECT 1 FROM promo_redemptions WHERE promo_id = ? AND user_id = ?').get(promo.id, account.id);
+      if (already) throw new Error('Вы уже использовали этот промокод');
+      const now = Date.now();
+      db.prepare('INSERT INTO promo_redemptions(promo_id,user_id,created_at) VALUES(?,?,?)').run(promo.id, account.id, now);
+      db.prepare('UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?').run(promo.id);
+      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?')
+        .run(promo.amount_cents, now, account.id);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      recordTransaction(account.id, 'promo', promo.amount_cents, balance, code, now);
+      return { amountCents: promo.amount_cents, balanceCents: balance };
+    })();
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Не удалось активировать промокод' });
+  }
+});
+
+app.get('/api/admin/summary', requireStaff, (req, res) => {
+  const staffRole = roleOf(req.account);
+  const day = Date.now() - 86400000;
+  const totals = {
+    users: db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_bot = 0').get().c,
+    bots: db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_bot = 1').get().c,
+    banned: db.prepare('SELECT COUNT(*) AS c FROM users WHERE banned = 1').get().c,
+    online: clients.size,
+    balanceCents: db.prepare('SELECT COALESCE(SUM(balance_cents),0) AS s FROM users').get().s,
+    casesOpened: db.prepare('SELECT COUNT(*) AS c FROM case_openings').get().c,
+    casesDay: db.prepare('SELECT COUNT(*) AS c FROM case_openings WHERE created_at > ?').get(day).c,
+    upgrades: db.prepare('SELECT COUNT(*) AS c FROM upgrade_rounds').get().c,
+    upgradesWon: db.prepare('SELECT COUNT(*) AS c FROM upgrade_rounds WHERE won = 1').get().c,
+    caseRevenue: db.prepare('SELECT COALESCE(SUM(cost_cents),0) AS s FROM case_openings').get().s,
+    payouts: db.prepare('SELECT COALESCE(SUM(amount_cents),0) AS s FROM inventory_sales').get().s,
+    openTickets: db.prepare('SELECT COUNT(DISTINCT user_id) AS c FROM support_messages WHERE from_staff = 0 AND read_at IS NULL').get().c,
+    activePromos: db.prepare('SELECT COUNT(*) AS c FROM promo_codes WHERE active = 1').get().c
+  };
+  res.json({
+    role: staffRole,
+    totals,
+    settings: {
+      caseLuck: settingGet('case_luck', 0),
+      upgradeLuck: settingGet('upgrade_luck', 0)
+    }
+  });
+});
+
+app.get('/api/admin/users', requireStaff, (req, res) => {
+  const query = `%${String(req.query.q || '').trim().toLowerCase()}%`;
+  const rows = db.prepare(`
+    SELECT id, steamid, name, avatar, balance_cents AS balanceCents, role, banned,
+      ban_reason AS banReason, is_bot AS isBot, luck_modifier AS luckModifier, created_at AS createdAt
+    FROM users
+    WHERE LOWER(name) LIKE ? OR steamid LIKE ?
+    ORDER BY id DESC LIMIT 100
+  `).all(query, query);
+  res.json({ users: rows.map(row => ({ ...row, banned: !!row.banned, isBot: !!row.isBot })) });
+});
+
+app.get('/api/admin/users/:id', requireStaff, (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const inventory = db.prepare(`
+    SELECT id, item_name AS name, price_cents AS priceCents, status, created_at AS createdAt
+    FROM site_inventory WHERE user_id = ? ORDER BY id DESC LIMIT 50
+  `).all(id);
+  const transactions = db.prepare(`
+    SELECT id, kind, amount_cents AS amountCents, balance_after AS balanceAfter, note, created_at AS createdAt
+    FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 50
+  `).all(id);
+  res.json({
+    user: {
+      id: user.id, steamid: user.steamid, name: user.name, avatar: user.avatar,
+      balanceCents: user.balance_cents, role: roleOf(user), banned: !!user.banned,
+      banReason: user.ban_reason, isBot: !!user.is_bot, luckModifier: user.luck_modifier,
+      createdAt: user.created_at
+    },
+    inventory, transactions
+  });
+});
+
+app.post('/api/admin/users/:id/balance', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const amount = Math.round(Number(req.body?.amountCents));
+  const note = String(req.body?.note || 'Корректировка баланса').slice(0, 200);
+  if (!Number.isSafeInteger(amount) || amount === 0) return res.status(400).json({ error: 'Укажите сумму' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const next = Number(user.balance_cents) + amount;
+  if (next < 0) return res.status(400).json({ error: 'Баланс не может быть отрицательным' });
+  db.prepare('UPDATE users SET balance_cents = ?, updated_at = ? WHERE id = ?').run(next, Date.now(), id);
+  recordTransaction(id, amount > 0 ? 'admin_credit' : 'admin_debit', amount, next, note);
+  adminLog(req.account, 'balance', user.name, `${amount > 0 ? '+' : ''}${(amount / 100).toFixed(2)} — ${note}`);
+  res.json({ ok: true, balanceCents: next });
+});
+
+app.post('/api/admin/users/:id/ban', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const banned = req.body?.banned ? 1 : 0;
+  const reason = String(req.body?.reason || '').slice(0, 200);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (isAdmin(user) && banned) return res.status(400).json({ error: 'Нельзя заблокировать администратора' });
+  db.prepare('UPDATE users SET banned = ?, ban_reason = ?, updated_at = ? WHERE id = ?')
+    .run(banned, banned ? reason : '', Date.now(), id);
+  if (banned) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  adminLog(req.account, banned ? 'ban' : 'unban', user.name, reason);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/role', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const role = String(req.body?.role || 'user');
+  if (!['user', 'support', 'admin'].includes(role)) return res.status(400).json({ error: 'Неизвестная роль' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (ADMIN_STEAMIDS.includes(String(user.steamid)) && role !== 'admin') {
+    return res.status(400).json({ error: 'Роль задана через переменную окружения' });
+  }
+  db.prepare('UPDATE users SET role = ?, updated_at = ? WHERE id = ?').run(role, Date.now(), id);
+  adminLog(req.account, 'role', user.name, role);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/luck', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const value = Math.max(-90, Math.min(300, Number(req.body?.luckModifier || 0)));
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  db.prepare('UPDATE users SET luck_modifier = ?, updated_at = ? WHERE id = ?').run(value, Date.now(), id);
+  adminLog(req.account, 'luck', user.name, `${value}%`);
+  res.json({ ok: true, luckModifier: value });
+});
+
+app.post('/api/admin/users/:id/give', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const item = CATALOG_BY_ID.get(String(req.body?.catalogId || ''));
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!item) return res.status(404).json({ error: 'Предмет не найден в каталоге' });
+  const inventoryId = insertInventoryItem(id, item, 'admin');
+  adminLog(req.account, 'give_item', user.name, item.name);
+  res.json({ ok: true, inventoryId });
+});
+
+app.get('/api/admin/transactions', requireStaff, (req, res) => {
+  const kind = String(req.query.kind || '').trim();
+  const rows = kind
+    ? db.prepare(`
+        SELECT t.id, t.user_id AS userId, u.name AS userName, t.kind, t.amount_cents AS amountCents,
+          t.balance_after AS balanceAfter, t.note, t.created_at AS createdAt
+        FROM transactions t LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.kind = ? ORDER BY t.id DESC LIMIT 200
+      `).all(kind)
+    : db.prepare(`
+        SELECT t.id, t.user_id AS userId, u.name AS userName, t.kind, t.amount_cents AS amountCents,
+          t.balance_after AS balanceAfter, t.note, t.created_at AS createdAt
+        FROM transactions t LEFT JOIN users u ON u.id = t.user_id
+        ORDER BY t.id DESC LIMIT 200
+      `).all();
+  const summary = db.prepare(`
+    SELECT kind, COUNT(*) AS count, COALESCE(SUM(amount_cents),0) AS total
+    FROM transactions GROUP BY kind ORDER BY total DESC
+  `).all();
+  res.json({ transactions: rows, summary });
+});
+
+app.get('/api/admin/cases', requireStaff, (_, res) => {
+  const overrides = new Map(db.prepare('SELECT * FROM case_overrides').all().map(row => [row.case_id, row]));
+  const stats = new Map(db.prepare(`
+    SELECT case_id, COUNT(*) AS opened, COALESCE(SUM(cost_cents),0) AS revenue
+    FROM case_openings GROUP BY case_id
+  `).all().map(row => [row.case_id, row]));
+  res.json({
+    cases: CASES.map(item => {
+      const override = overrides.get(item.id);
+      const stat = stats.get(item.id) || { opened: 0, revenue: 0 };
+      return {
+        id: item.id,
+        name: item.name,
+        basePriceCents: item.priceCents,
+        priceCents: override && override.price_cents != null ? override.price_cents : item.priceCents,
+        enabled: override ? !!override.enabled : true,
+        opened: stat.opened,
+        revenueCents: stat.revenue,
+        contents: item.contents.map(([id, weight]) => {
+          const skin = CATALOG_BY_ID.get(id);
+          return { catalogId: id, name: skin?.name || id, priceCents: skin?.priceCents || 0, weight };
+        })
+      };
+    })
+  });
+});
+
+app.post('/api/admin/cases/:id', requireAdmin, (req, res) => {
+  const caseData = CASES_BY_ID.get(String(req.params.id));
+  if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
+  const hasPrice = req.body?.priceCents !== undefined && req.body?.priceCents !== null && req.body?.priceCents !== '';
+  const price = hasPrice ? Math.max(0, Math.round(Number(req.body.priceCents))) : null;
+  if (hasPrice && !Number.isSafeInteger(price)) return res.status(400).json({ error: 'Некорректная цена' });
+  const enabled = req.body?.enabled === undefined ? 1 : (req.body.enabled ? 1 : 0);
+  db.prepare(`
+    INSERT INTO case_overrides(case_id,price_cents,enabled,updated_at) VALUES(?,?,?,?)
+    ON CONFLICT(case_id) DO UPDATE SET price_cents = excluded.price_cents, enabled = excluded.enabled, updated_at = excluded.updated_at
+  `).run(caseData.id, price, enabled, Date.now());
+  adminLog(req.account, 'case_update', caseData.name, `price=${price ?? 'base'} enabled=${enabled}`);
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/drops', requireStaff, (_, res) => {
+  const rows = db.prepare(`
+    SELECT id, user_name AS userName, item_name AS itemName, price_cents AS priceCents,
+      rarity, source, created_at AS createdAt
+    FROM live_drops ORDER BY id DESC LIMIT 100
+  `).all();
+  res.json({ drops: rows });
+});
+
+app.delete('/api/admin/drops/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM live_drops WHERE id = ?').run(Number(req.params.id));
+  adminLog(req.account, 'drop_delete', req.params.id, '');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/settings', requireAdmin, (req, res) => {
+  const caseLuck = Math.max(-90, Math.min(300, Number(req.body?.caseLuck ?? 0)));
+  const upgradeLuck = Math.max(-90, Math.min(300, Number(req.body?.upgradeLuck ?? 0)));
+  settingSet('case_luck', caseLuck);
+  settingSet('upgrade_luck', upgradeLuck);
+  adminLog(req.account, 'settings', 'coefficients', `case=${caseLuck}% upgrade=${upgradeLuck}%`);
+  res.json({ ok: true, caseLuck, upgradeLuck });
+});
+
+app.get('/api/admin/bots', requireStaff, (_, res) => {
+  const rows = db.prepare(`
+    SELECT id, name, avatar, balance_cents AS balanceCents, created_at AS createdAt
+    FROM users WHERE is_bot = 1 ORDER BY id DESC LIMIT 100
+  `).all();
+  res.json({ bots: rows });
+});
+
+app.post('/api/admin/bots', requireAdmin, (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 40);
+  if (!name) return res.status(400).json({ error: 'Укажите имя бота' });
+  const now = Date.now();
+  const steamid = `bot:${crypto.randomBytes(8).toString('hex')}`;
+  const id = Number(db.prepare(`
+    INSERT INTO users(steamid,name,avatar,balance_cents,is_bot,created_at,updated_at)
+    VALUES(?,?,?,?,1,?,?)
+  `).run(steamid, name, '', 0, now, now).lastInsertRowid);
+  adminLog(req.account, 'bot_create', name, '');
+  res.json({ ok: true, id });
+});
+
+app.delete('/api/admin/bots/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const bot = db.prepare('SELECT * FROM users WHERE id = ? AND is_bot = 1').get(id);
+  if (!bot) return res.status(404).json({ error: 'Бот не найден' });
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  adminLog(req.account, 'bot_delete', bot.name, '');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/bots/:id/drop', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const bot = db.prepare('SELECT * FROM users WHERE id = ? AND is_bot = 1').get(id);
+  if (!bot) return res.status(404).json({ error: 'Бот не найден' });
+  const item = req.body?.catalogId
+    ? CATALOG_BY_ID.get(String(req.body.catalogId))
+    : CATALOG[crypto.randomInt(0, CATALOG.length)];
+  if (!item) return res.status(404).json({ error: 'Предмет не найден' });
+  const drop = addLiveDrop(bot.name, item, 'case');
+  broadcast('drop', drop);
+  adminLog(req.account, 'bot_drop', bot.name, item.name);
+  res.json({ ok: true, drop });
+});
+
+app.get('/api/admin/promos', requireStaff, (_, res) => {
+  const rows = db.prepare(`
+    SELECT id, code, kind, amount_cents AS amountCents, max_uses AS maxUses,
+      used_count AS usedCount, expires_at AS expiresAt, active, created_at AS createdAt
+    FROM promo_codes ORDER BY id DESC LIMIT 100
+  `).all();
+  res.json({ promos: rows.map(row => ({ ...row, active: !!row.active })) });
+});
+
+app.post('/api/admin/promos', requireAdmin, (req, res) => {
+  const code = String(req.body?.code || '').trim().toUpperCase().slice(0, 32);
+  const amount = Math.max(0, Math.round(Number(req.body?.amountCents || 0)));
+  const maxUses = Math.max(0, Math.round(Number(req.body?.maxUses || 0)));
+  const days = Math.max(0, Number(req.body?.days || 0));
+  if (!/^[A-Z0-9_-]{3,32}$/.test(code)) return res.status(400).json({ error: 'Код: 3-32 символа A-Z, 0-9, _ или -' });
+  if (!amount) return res.status(400).json({ error: 'Укажите сумму бонуса' });
+  const exists = db.prepare('SELECT 1 FROM promo_codes WHERE code = ?').get(code);
+  if (exists) return res.status(400).json({ error: 'Такой промокод уже есть' });
+  db.prepare(`
+    INSERT INTO promo_codes(code,kind,amount_cents,max_uses,expires_at,active,created_at)
+    VALUES(?,'balance',?,?,?,1,?)
+  `).run(code, amount, maxUses, days ? Date.now() + days * 86400000 : null, Date.now());
+  adminLog(req.account, 'promo_create', code, `${(amount / 100).toFixed(2)} x${maxUses || '∞'}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/promos/:id/toggle', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const promo = db.prepare('SELECT * FROM promo_codes WHERE id = ?').get(id);
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  db.prepare('UPDATE promo_codes SET active = ? WHERE id = ?').run(promo.active ? 0 : 1, id);
+  adminLog(req.account, 'promo_toggle', promo.code, promo.active ? 'off' : 'on');
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/promos/:id', requireAdmin, (req, res) => {
+  const promo = db.prepare('SELECT * FROM promo_codes WHERE id = ?').get(Number(req.params.id));
+  if (!promo) return res.status(404).json({ error: 'Промокод не найден' });
+  db.prepare('DELETE FROM promo_codes WHERE id = ?').run(promo.id);
+  adminLog(req.account, 'promo_delete', promo.code, '');
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/support', requireStaff, (_, res) => {
+  const threads = db.prepare(`
+    SELECT u.id AS userId, u.name AS userName, u.avatar, u.support_email AS email,
+      COUNT(m.id) AS messages,
+      SUM(CASE WHEN m.from_staff = 0 AND m.read_at IS NULL THEN 1 ELSE 0 END) AS unread,
+      MAX(m.created_at) AS lastAt
+    FROM support_messages m JOIN users u ON u.id = m.user_id
+    GROUP BY u.id ORDER BY MAX(m.created_at) DESC LIMIT 50
+  `).all();
+  res.json({ threads });
+});
+
+app.get('/api/admin/support/:userId', requireStaff, (req, res) => {
+  const userId = Number(req.params.userId);
+  const user = db.prepare('SELECT id, name, avatar, support_email AS email FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const messages = db.prepare(`
+    SELECT id, message, from_staff AS fromStaff, created_at AS createdAt
+    FROM support_messages WHERE user_id = ? ORDER BY id ASC LIMIT 200
+  `).all(userId);
+  db.prepare('UPDATE support_messages SET read_at = ? WHERE user_id = ? AND from_staff = 0 AND read_at IS NULL')
+    .run(Date.now(), userId);
+  res.json({ user, messages: messages.map(row => ({ ...row, fromStaff: !!row.fromStaff })) });
+});
+
+app.post('/api/admin/support/:userId', requireStaff, (req, res) => {
+  const userId = Number(req.params.userId);
+  const message = String(req.body?.message || '').trim().slice(0, 1000);
+  if (!message) return res.status(400).json({ error: 'Пустое сообщение' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  db.prepare('INSERT INTO support_messages(user_id,message,from_staff,staff_id,created_at) VALUES(?,?,1,?,?)')
+    .run(userId, message, req.account.id, Date.now());
+  adminLog(req.account, 'support_reply', user.name, message.slice(0, 60));
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/logs', requireStaff, (_, res) => {
+  const logs = db.prepare(`
+    SELECT id, admin_name AS adminName, action, target, details, created_at AS createdAt
+    FROM admin_logs ORDER BY id DESC LIMIT 200
+  `).all();
+  const memory = process.memoryUsage();
+  res.json({
+    logs,
+    infra: {
+      database: db.describe(),
+      databaseDriver: db.driver,
+      cache: cache.describe(),
+      cacheDriver: cache.driver,
+      cacheReady: !!cache.ready,
+      queue: queue.stats(),
+      recentJobs: queue.recent(),
+      failedJobs: queue.failures(),
+      rateLimit: `${process.env.RATE_LIMIT || 120} запросов / ${process.env.RATE_WINDOW || 60} c`
+    },
+    system: {
+      uptimeSeconds: Math.round(process.uptime()),
+      memoryMb: Math.round(memory.rss / 1048576),
+      heapMb: Math.round(memory.heapUsed / 1048576),
+      nodeVersion: process.version,
+      online: clients.size,
+      catalogSize: CATALOG.length,
+      dbSizeMb: (() => {
+        try { return Math.round(fs.statSync(DB_PATH).size / 1048576 * 10) / 10; } catch { return 0; }
+      })(),
+      startedAt: Date.now() - Math.round(process.uptime() * 1000)
+    }
+  });
+});
 
 app.get('/api/support/contact', (req, res) => {
   const account = currentUser(req);
@@ -1000,9 +1663,9 @@ app.get('/api/support/messages', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'login_required' });
   res.json(db.prepare(`
-    SELECT id,message,created_at AS createdAt FROM support_messages
+    SELECT id,message,from_staff AS fromStaff,created_at AS createdAt FROM support_messages
     WHERE user_id = ? ORDER BY id DESC LIMIT 50
-  `).all(account.id).reverse());
+  `).all(account.id).reverse().map(row => ({ ...row, fromStaff: !!row.fromStaff })));
 });
 app.post('/api/support/messages', (req, res) => {
   const account = currentUser(req);

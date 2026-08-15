@@ -1,6 +1,3 @@
-/* Caser-style visual pass v2 */
-
-/* ---------- GLOBAL ---------- */
 :root{
   --caser-blue:#83D8FF;
   --caser-green:#44C987;
@@ -12,7 +9,6 @@
 html,body{background:#090b0f!important;color:#fff}
 body{font-family:Arial,"Helvetica Neue",sans-serif}
 
-/* ---------- HEADER ---------- */
 .top{
   height:80px!important;
   grid-template-columns:220px minmax(0,1fr) 420px!important;
@@ -69,7 +65,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .header-balance button{height:42px!important}
 .profile-trigger{width:42px!important;height:42px!important}
 
-/* ---------- WHEEL ---------- */
 .wheelbox{height:430px!important;background:linear-gradient(180deg,rgba(8,11,16,.94),rgba(8,10,14,.74))!important;border:1px solid rgba(131,216,255,.08)!important;border-radius:3px!important;overflow:visible!important}
 .wheelhead{height:42px!important;padding:0 14px!important;background:rgba(38,44,59,.9)!important;border:0!important;border-bottom:1px solid rgba(131,216,255,.22)!important;border-image:none!important;color:#aeb4c0!important;font-size:11px!important}
 .wheelhead b{color:var(--caser-blue)!important;font-size:14px!important}
@@ -96,7 +91,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .wheelcenter strong{font-size:43px!important;text-shadow:0 0 18px rgba(255,255,255,.12)!important}
 .wheelcenter span{color:#777f89!important}
 
-/* Replace the ugly sprite pointer with a clean bottom pointer. */
 .pointer-orbit{
   top:auto!important;left:50%!important;bottom:18px!important;
   width:48px!important;height:48px!important;
@@ -123,7 +117,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .upgrade:disabled{opacity:.5!important}
 .under{font-size:12px!important;color:#8d929a!important}
 
-/* ---------- LANGUAGE MENU ---------- */
 .footer-language{position:relative!important;z-index:100!important;align-self:flex-start!important}
 .lang-select{position:relative!important;z-index:101!important}
 .lang-select>button{
@@ -158,7 +151,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .lang-menu button.active{background:rgba(131,216,255,.13)!important;color:var(--caser-blue)!important}
 .lang-menu button .lang-check{display:none!important}
 
-/* ---------- PAGE TITLE / CASES ---------- */
 .page-title{
   position:relative!important;display:flex!important;align-items:center!important;justify-content:center!important;
   min-height:64px!important;margin:0 0 16px!important;padding:0 24px!important;
@@ -170,7 +162,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .page-title:after{content:"";position:absolute;left:20%;right:20%;bottom:0;height:1px;background:linear-gradient(90deg,transparent,rgba(131,216,255,.75),transparent)}
 .page-title+.sub{margin:-6px 0 18px;text-align:center}
 
-/* ---------- PAYMENT MODAL ---------- */
 .payment-overlay{
   position:fixed!important;inset:0!important;z-index:200!important;display:flex!important;align-items:center!important;justify-content:center!important;
   padding:20px!important;background:rgba(0,0,0,.72)!important;backdrop-filter:blur(10px)!important;
@@ -224,7 +215,6 @@ body{font-family:Arial,"Helvetica Neue",sans-serif}
 .payment-amount>span{display:flex;align-items:center;min-width:0;gap:6px}.payment-amount input{width:160px!important;height:100%!important;padding:0!important;background:transparent!important;border:0!important;outline:0!important;color:#fff!important;font-size:25px!important;font-weight:500!important}.payment-amount b{font-size:24px!important;color:rgba(255,255,255,.55)!important}.payment-amount small{font-size:11px!important;color:rgba(255,255,255,.32)!important}
 .payment-promo{height:52px!important;display:flex!important;align-items:center!important;border:1px solid rgba(255,255,255,.08)!important;background:rgba(255,255,255,.025)!important}.payment-promo:focus-within{border-color:var(--caser-green)!important}.payment-promo>span{width:44px;text-align:center;color:rgba(255,255,255,.38);font-size:22px}.payment-promo input{flex:1;height:100%!important;background:transparent!important;border:0!important;outline:0!important;color:#fff!important;font-size:14px!important}.payment-promo button{width:120px;height:42px;border:0;background:transparent;color:#fff;opacity:.35;font-size:12px;font-weight:800}.payment-submit{height:52px!important;border:1px solid var(--caser-green)!important;border-radius:2px!important;background:#13432c!important;color:var(--caser-green)!important;font-size:17px!important;font-weight:800!important;letter-spacing:.04em!important;box-shadow:inset 0 0 22px rgba(68,201,135,.42)!important;transition:background .18s ease,box-shadow .18s ease,transform .18s ease!important}.payment-submit:hover{background:#1d5a3a!important;box-shadow:inset 0 0 25px rgba(68,201,135,.62)!important;transform:translateY(-1px)!important}.payment-bottom>p{margin:0!important;text-align:center!important;color:rgba(255,255,255,.28)!important;font-size:10px!important;line-height:1.35!important}
 
-/* ---------- RESPONSIVE ---------- */
 @media (max-width:1100px){
   .top{grid-template-columns:175px minmax(0,1fr) auto!important}.nav button{min-width:112px!important;width:112px!important;font-size:13px!important}.brand img{max-width:145px!important;height:48px!important}.actions{padding-right:9px!important}.header-balance{min-width:142px!important}.payment-methods{grid-template-columns:repeat(2,1fr)!important}
 }

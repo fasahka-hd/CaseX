@@ -1,0 +1,238 @@
+@property --chance-half {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+:root {
+  --wheel-size: 246px;
+  --wheel-ring: 22px;
+  --wheel-pointer-w: 44px;
+  --wheel-pointer-h: 48px;
+  --wheel-fill: #DA6A27;
+  --wheel-empty: #343434;
+}
+
+.wheelbox {
+  position: relative !important;
+  height: auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  overflow: visible !important;
+  padding-bottom: 18px !important;
+}
+
+.wheelhead {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 14px !important;
+  margin: 0 !important;
+}
+.wheelhead span { font-size: 11px !important; letter-spacing: .06em; }
+.wheelhead b { font-size: 14px !important; font-variant-numeric: tabular-nums; }
+
+.wheel-stage {
+  position: relative !important;
+  display: grid !important;
+  place-items: center !important;
+  width: var(--wheel-size) !important;
+  height: var(--wheel-size) !important;
+
+  margin: 34px 0 22px !important;
+  transform: none !important;
+  overflow: visible !important;
+}
+
+.wheel {
+  position: relative !important;
+  grid-area: 1 / 1 !important;
+  width: var(--wheel-size) !important;
+  height: var(--wheel-size) !important;
+  margin: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border-radius: 50% !important;
+  overflow: visible !important;
+  transform: none !important;
+  animation: none !important;
+
+  background: conic-gradient(
+    from 180deg,
+    var(--wheel-empty) 0 calc(50% - var(--chance-half, 0%)),
+    var(--wheel-fill)  calc(50% - var(--chance-half, 0%)) calc(50% + var(--chance-half, 0%)),
+    var(--wheel-empty) calc(50% + var(--chance-half, 0%)) 100%
+  ) !important;
+  box-shadow:
+    0 0 0 6px rgba(0, 0, 0, .35),
+    0 0 0 7px rgba(255, 255, 255, .05),
+    0 0 34px rgba(218, 106, 39, .12) !important;
+  transition: --chance-half .5s cubic-bezier(.2, .75, .2, 1) !important;
+}
+
+.wheel::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: var(--wheel-ring) !important;
+  border-radius: 50% !important;
+  background: radial-gradient(circle, #262626 0%, #141414 78%) !important;
+  border: 0 !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .05), inset 0 0 30px rgba(0, 0, 0, .55) !important;
+  z-index: 1 !important;
+}
+
+.spinner-ring,
+.spinner-center,
+.spinner-logo {
+  position: absolute !important;
+  left: 50% !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  object-fit: contain !important;
+  pointer-events: none !important;
+}
+.spinner-ring-2 { width: calc(var(--wheel-size) - 2 * var(--wheel-ring) - 6px) !important; height: calc(var(--wheel-size) - 2 * var(--wheel-ring) - 6px) !important; z-index: 3 !important; opacity: .55 !important; }
+.spinner-ring-1 { width: calc(var(--wheel-size) * .62) !important; height: calc(var(--wheel-size) * .62) !important; z-index: 4 !important; opacity: .6 !important; }
+.spinner-center { width: calc(var(--wheel-size) * .52) !important; height: calc(var(--wheel-size) * .52) !important; z-index: 5 !important; opacity: .55 !important; }
+
+.spinner-logo, .wheel-logo { display: none !important; }
+
+.wheel-tick { display: none !important; }
+
+.wheelcenter {
+  position: relative !important;
+  z-index: 9 !important;
+  text-align: center !important;
+  transform: none !important;
+  transition: none !important;
+}
+.wheelcenter strong {
+  display: block !important;
+  font-size: 36px !important;
+  line-height: 1 !important;
+  font-variant-numeric: tabular-nums !important;
+  color: #fff !important;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, .75) !important;
+}
+.wheelcenter span {
+  display: block !important;
+  margin-top: 8px !important;
+  font-size: 9px !important;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #9aa0a6 !important;
+}
+
+.pointer-orbit {
+  position: absolute !important;
+  grid-area: 1 / 1 !important;
+  left: 50% !important;
+  top: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: 0 !important;
+  height: 0 !important;
+  z-index: 20 !important;
+  transform: rotate(var(--angle, 0deg)) !important;
+  transform-origin: 50% 50% !important;
+  will-change: transform;
+  pointer-events: none !important;
+}
+.pointer-orbit .pointer,
+.wheel-stage > .pointer,
+.pointer {
+  display: block !important;
+  position: absolute !important;
+  left: 50% !important;
+  top: auto !important;
+  right: auto !important;
+
+  bottom: calc(var(--wheel-size) / 2 - 4px) !important;
+  width: var(--wheel-pointer-w) !important;
+  height: var(--wheel-pointer-h) !important;
+  transform: translateX(-50%) !important;
+  border: 0 !important;
+  object-fit: contain !important;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .6)) drop-shadow(0 0 6px rgba(218, 106, 39, .45)) !important;
+}
+
+.wheelbox .upgrade {
+  flex: 0 0 auto !important;
+  width: min(262px, calc(100% - 34px)) !important;
+  height: 56px !important;
+  margin: 0 !important;
+}
+.wheelbox .under {
+  flex: 0 0 auto !important;
+  min-height: 14px !important;
+  margin-top: 10px !important;
+  padding: 0 12px;
+  text-align: center;
+  font-size: 10px !important;
+}
+
+.wheelbox.is-spinning .wheelcenter span { opacity: .6; }
+.wheel.is-spinning { box-shadow: 0 0 0 6px rgba(0,0,0,.35), 0 0 0 7px rgba(218,106,39,.35), 0 0 46px rgba(218,106,39,.25) !important; }
+
+@media (max-width: 1100px) {
+  .wheelbox { order: -1; margin-bottom: 14px; }
+}
+@media (max-width: 650px) {
+  :root { --wheel-size: 214px; --wheel-ring: 19px; --wheel-pointer-w: 38px; --wheel-pointer-h: 42px; }
+  .wheel-stage { margin: 30px 0 18px !important; }
+  .wheelcenter strong { font-size: 30px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wheel { transition: none !important; }
+}
+
+.wheel-stage .wheel,
+.wheelbox .wheel-stage .wheel {
+  width: var(--wheel-size) !important;
+  height: var(--wheel-size) !important;
+  margin: 0 !important;
+  grid-area: 1 / 1 !important;
+  box-shadow:
+    0 0 0 6px rgba(0, 0, 0, .35),
+    0 0 0 7px rgba(255, 255, 255, .05),
+    0 0 34px rgba(218, 106, 39, .12) !important;
+  transform: none !important;
+  animation: none !important;
+  transition: --chance-half .5s cubic-bezier(.2, .75, .2, 1) !important;
+  background: conic-gradient(
+    from 180deg,
+    var(--wheel-empty) 0 calc(50% - var(--chance-half, 0%)),
+    var(--wheel-fill)  calc(50% - var(--chance-half, 0%)) calc(50% + var(--chance-half, 0%)),
+    var(--wheel-empty) calc(50% + var(--chance-half, 0%)) 100%
+  ) !important;
+}
+.wheel-stage .wheel::before,
+.wheelbox .wheel-stage .wheel::before {
+  inset: var(--wheel-ring) !important;
+  border: 0 !important;
+  background: radial-gradient(circle, #262626 0%, #141414 78%) !important;
+}
+.wheel.spin,
+.wheel-stage .wheel.spin { transform: none !important; animation: none !important; }
+.wheel.spin .wheelcenter,
+.wheel.spin .wheel-logo { transform: none !important; }
+.wheel .wheel-logo { display: none !important; }
+
+.pointer-orbit::before,
+.pointer-orbit::after,
+.wheel-stage::before,
+.wheel-stage::after,
+.wheel::after,
+.wheelbox::before,
+.wheelbox::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+}
