@@ -8,6 +8,8 @@
     tab: 'dashboard',
     role: 'user',
     me: null,
+    brand: 'КЕЙСЕР',
+    telegram: 'https://t.me/',
     summary: null,
     users: [],
     userQuery: '',
@@ -24,7 +26,11 @@
     logs: [],
     system: null,
     infra: null,
-    catalog: []
+    catalog: [],
+    emailStatus: null,
+    emailQueue: [],
+    emailQueueStatus: '',
+    broadcasts: []
   };
 
   const ICONS = {
@@ -36,6 +42,8 @@
     bots: '<rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V4.5"/><circle cx="9" cy="13" r="1.2"/><circle cx="15" cy="13" r="1.2"/>',
     promos: '<rect x="3" y="9" width="18" height="11" rx="2"/><path d="M3 13h18"/><path d="M12 9v11"/><path d="M8.5 9a2.5 2.5 0 1 1 3.5-2.3"/><path d="M15.5 9a2.5 2.5 0 1 0-3.5-2.3"/>',
     support: '<path d="M20 15.5A2.5 2.5 0 0 1 17.5 18H8l-4 3V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5Z"/>',
+    email: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+    broadcast: '<path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M16 8a5 5 0 0 1 0 8"/><path d="M19 5a9 9 0 0 1 0 14"/>',
     logs: '<path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5"/><path d="M9 12h7"/><path d="M9 16h7"/>'
   };
   const icon = key => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[key] || ''}</svg>`;
@@ -48,6 +56,8 @@
     { key: 'coefficients', label: 'Коэффициенты', adminOnly: true },
     { key: 'bots', label: 'Боты' },
     { key: 'promos', label: 'Промокоды' },
+    { key: 'email', label: 'Почта', adminOnly: true },
+    { key: 'broadcast', label: 'Рассылки' },
     { key: 'support', label: 'Поддержка' },
     { key: 'logs', label: 'Логи и система' }
   ];
@@ -113,7 +123,7 @@
     root.innerHTML = `
       <div class="admin-shell">
         <aside class="admin-side">
-          <div class="admin-brand"><img src="/chunks/logo.svg" alt="">АДМИН-ПАНЕЛЬ</div>
+          <div class="admin-brand"><img src="/chunks/logo.svg" alt="">${esc(state.brand)}<span style="margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.14em;color:#56A8FF;opacity:.85">ADMIN</span></div>
           ${tabs}
           <div class="side-foot"><a href="/">← Вернуться на сайт</a></div>
         </aside>
@@ -140,9 +150,105 @@
     if (tab === 'coefficients') return coefficientsView();
     if (tab === 'bots') return botsView();
     if (tab === 'promos') return promosView();
+    if (tab === 'email') return emailView();
+    if (tab === 'broadcast') return broadcastView();
     if (tab === 'support') return supportView();
     if (tab === 'logs') return logsView();
     return '';
+  }
+
+  function emailView() {
+    const s = state.emailStatus || {};
+    const queueRows = (state.emailQueue || []).map(m => `
+      <tr>
+        <td>${esc(m.to)}</td>
+        <td>${esc(m.subject)}</td>
+        <td><span class="tag ${m.status === 'sent' ? 'on' : m.status === 'failed' ? 'banned' : 'user'}">${m.status}</span></td>
+        <td class="num">${m.attempts}</td>
+        <td class="muted">${m.error ? esc(m.error) : ''}</td>
+        <td class="muted">${when(m.createdAt)}</td>
+      </tr>`).join('');
+    return `
+      <div class="cards">
+        <div class="card ${s.configured ? 'good' : 'bad'}"><span>SMTP статус</span><b>${s.configured ? 'Подключено' : 'Не настроено'}</b></div>
+        <div class="card"><span>В очереди</span><b>${num(s.pending || 0)}</b></div>
+        <div class="card good"><span>Отправлено</span><b>${num(s.sent || 0)}</b></div>
+        <div class="card bad"><span>Ошибок</span><b>${num(s.failed || 0)}</b></div>
+      </div>
+      <div class="block">
+        <h2>Настройки SMTP</h2>
+        <div class="block-body">
+          <p class="muted" style="margin-top:0">${esc(s.description || '')}</p>
+          <p class="muted" style="margin-top:0">Задайте переменные окружения <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code>, <code>SMTP_FROM</code> и перезапустите сервер. Пример для Яндекс.Почты: <code>smtp.yandex.ru:465</code> с <code>SMTP_SECURE=1</code>; для Gmail: <code>smtp.gmail.com:587</code>; для Mailgun/SendGrid: их SMTP relay.</p>
+        </div>
+      </div>
+      ${isAdmin() ? `
+      <div class="block">
+        <h2>Тестовое письмо</h2>
+        <div class="block-body row">
+          <input class="grow" id="mail-test-to" placeholder="email@example.com">
+          <button class="act primary" id="mail-test-send">Отправить тест</button>
+        </div>
+      </div>
+      <div class="block">
+        <h2>Массовая рассылка</h2>
+        <div class="block-body" style="display:grid;gap:10px;max-width:640px">
+          <input id="mail-broadcast-subject" placeholder="Тема письма" maxlength="200">
+          <textarea id="mail-broadcast-body" rows="6" placeholder="Текст письма (переносы строк сохраняются)" style="width:100%;min-height:140px"></textarea>
+          <button class="act primary" id="mail-broadcast-send">Поставить в очередь всем подписчикам</button>
+          <div class="muted" style="font-size:12px">Письма получат только пользователи, указавшие email и не отписавшиеся от рассылки.</div>
+        </div>
+      </div>` : ''}
+      <div class="block">
+        <h2>Очередь писем <button class="act small" id="mail-queue-refresh" style="float:right">Обновить</button></h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Кому</th><th>Тема</th><th>Статус</th><th class="num">Попыток</th><th>Ошибка</th><th>Создано</th></tr></thead>
+            <tbody>${queueRows || '<tr><td colspan="6" class="empty-row">Очередь пуста</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="block-body row">
+          ${['', 'pending', 'sent', 'failed'].map(s => `<button class="act small ${state.emailQueueStatus === s ? 'primary' : ''}" data-mail-status="${s}">${s === '' ? 'Все' : s}</button>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  function broadcastView() {
+    const list = (state.broadcasts || []).map(n => `
+      <tr>
+        <td><b>${esc(n.title)}</b><div class="muted" style="max-width:480px;white-space:pre-wrap">${esc(n.body)}</div></td>
+        <td><span class="tag ${n.audience === 'all' ? 'on' : 'user'}">${n.audience}</span></td>
+        <td class="muted">${when(n.createdAt)}</td>
+        <td class="num">${isAdmin() ? `<button class="act small danger" data-broadcast-del="${n.id}">Удалить</button>` : ''}</td>
+      </tr>`).join('');
+    return `
+      ${isAdmin() ? `
+      <div class="block">
+        <h2>Новое уведомление</h2>
+        <div class="block-body" style="display:grid;gap:10px;max-width:640px">
+          <input id="bc-title" placeholder="Заголовок" maxlength="120">
+          <textarea id="bc-body" rows="4" placeholder="Текст уведомления" style="width:100%;min-height:100px"></textarea>
+          <div class="row">
+            <select id="bc-audience">
+              <option value="all">Всем посетителям</option>
+              <option value="authenticated">Только вошедшим</option>
+              <option value="guests">Только гостям</option>
+            </select>
+            <input id="bc-ttl" type="number" min="1" max="720" value="24" style="width:120px">
+            <span class="muted">часов жизни (0 = бессрочно)</span>
+          </div>
+          <button class="act primary" id="bc-send" style="justify-self:start">Отправить</button>
+        </div>
+      </div>` : ''}
+      <div class="block">
+        <h2>Активные и прошлые уведомления</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Уведомление</th><th>Аудитория</th><th>Создано</th><th></th></tr></thead>
+            <tbody>${list || '<tr><td colspan="4" class="empty-row">Уведомлений нет</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   function dashboardView() {
@@ -207,9 +313,15 @@
   function userModal() {
     const detail = state.userDetail;
     const user = detail.user;
-    const inventory = detail.inventory.length ? detail.inventory.slice(0, 12).map(item => `
-      <tr><td>${esc(item.name)}</td><td class="num mono">${money(item.priceCents)}</td><td>${esc(item.status)}</td><td class="muted">${when(item.createdAt)}</td></tr>
-    `).join('') : '<tr><td colspan="4" class="empty-row">Инвентарь пуст</td></tr>';
+    const inventory = detail.inventory.length ? detail.inventory.slice(0, 30).map(item => `
+      <tr>
+        <td>${esc(item.name)}</td>
+        <td class="num mono">${money(item.priceCents)}</td>
+        <td>${esc(item.status)}</td>
+        <td class="muted">${when(item.createdAt)}</td>
+        <td class="num">${isAdmin() && item.status === 'active' ? `<button class="act small danger" data-revoke="${item.id}">Отозвать</button>` : ''}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="5" class="empty-row">Инвентарь пуст</td></tr>';
     const transactions = detail.transactions.length ? detail.transactions.slice(0, 12).map(row => `
       <tr>
         <td>${esc(TX_LABELS[row.kind] || row.kind)}</td>
@@ -254,6 +366,12 @@
         <datalist id="catalog-list">${state.catalog.slice(0, 300).map(item => `<option value="${esc(item.catalogId)}">${esc(item.name)}</option>`).join('')}</datalist>
       </div>
       <div class="field">
+        <label>Написать на email ${user.email ? `(${esc(user.email)})` : '(email не указан)'}</label>
+        <input id="email-user-subject" placeholder="Тема" style="margin-bottom:6px" ${user.email ? '' : 'disabled'}>
+        <textarea id="email-user-body" rows="3" placeholder="Текст письма" style="margin-bottom:6px" ${user.email ? '' : 'disabled'}></textarea>
+        <button class="act" id="email-user" ${user.email ? '' : 'disabled'}>Отправить письмо</button>
+      </div>
+      <div class="field">
         <label>Блокировка</label>
         <div class="row">
           <input class="grow" id="ban-reason" placeholder="Причина" value="${esc(user.banReason || '')}">
@@ -276,7 +394,7 @@
             </div>
             ${controls}
             <div class="block"><h2>Последние предметы</h2><div class="table-scroll"><table>
-              <thead><tr><th>Предмет</th><th class="num">Цена</th><th>Статус</th><th>Дата</th></tr></thead>
+              <thead><tr><th>Предмет</th><th class="num">Цена</th><th>Статус</th><th>Дата</th><th></th></tr></thead>
               <tbody>${inventory}</tbody></table></div></div>
             <div class="block"><h2>Операции</h2><div class="table-scroll"><table>
               <thead><tr><th>Тип</th><th class="num">Сумма</th><th class="num">Баланс</th><th>Дата</th></tr></thead>
@@ -591,7 +709,43 @@
         </div>
       </div>` : '';
 
-    return `${infraBlock}
+    const priceStatus = state.priceStatus || {};
+    const pct = priceStatus.loading && priceStatus.progress
+      ? Math.round(priceStatus.progress.done / priceStatus.progress.total * 100)
+      : 0;
+    const priceBlock = isAdmin() ? `
+      <div class="block">
+        <h2>Цены с торговой площадки Steam</h2>
+        <div class="block-body" style="display:grid;gap:10px">
+          <div class="row" style="gap:18px;flex-wrap:wrap">
+            <div><b style="color:#56A8FF">${num(priceStatus.withPrice || 0)}</b><span class="muted" style="margin-left:6px">с ценой из ${num(priceStatus.catalogItems || 0)}</span></div>
+            <div><b>${num(priceStatus.cachedPrices || 0)}</b><span class="muted" style="margin-left:6px">в кэше БД</span></div>
+          </div>
+          ${priceStatus.loading ? `
+            <div style="background:#10141a;border-radius:6px;height:10px;overflow:hidden;border:1px solid var(--line)">
+              <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--accent),var(--accent-light));transition:width .3s"></div>
+            </div>
+            <div class="muted" style="font-size:12px">Загрузка: ${priceStatus.progress?.done || 0} / ${priceStatus.progress?.total || 0} (${pct}%) — цены подтягиваются с интервалом ~0.15 сек, обновите страницу через пару минут</div>
+          ` : ''}
+          <div class="row">
+            <button class="act primary" id="sys-prices-full" ${priceStatus.loading ? 'disabled' : ''}>Обновить ВСЕ цены с Steam</button>
+            <button class="act" id="sys-prices-refresh" ${priceStatus.loading ? 'disabled' : ''}>Подтянуть 50 новых</button>
+            <button class="act" id="sys-catalog-rebuild">Пересобрать каталог</button>
+          </div>
+        </div>
+      </div>` : '';
+
+    const systemActions = isAdmin() ? `
+      <div class="block">
+        <h2>Система</h2>
+        <div class="block-body row" style="gap:10px">
+          <button class="act" id="sys-cache-clear">Очистить кеш</button>
+          <button class="act danger" id="sys-maintenance-on">Техработы вкл</button>
+          <button class="act ok" id="sys-maintenance-off">Техработы выкл</button>
+        </div>
+      </div>` : '';
+
+    return `${infraBlock}${priceBlock}${systemActions}
       <div class="cards">
         <div class="card"><span>Аптайм</span><b>${hours}ч ${minutes}м</b></div>
         <div class="card"><span>Память (RSS)</span><b>${num(system.memoryMb)} МБ</b></div>
@@ -804,6 +958,106 @@
       const log = view.querySelector('#chat-log');
       if (log) log.scrollTop = log.scrollHeight;
     }
+
+    view.querySelectorAll('[data-mail-status]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.emailQueueStatus = btn.dataset.mailStatus;
+        loadEmail();
+      });
+    });
+    const mailRefresh = view.querySelector('#mail-queue-refresh');
+    if (mailRefresh) mailRefresh.addEventListener('click', loadEmail);
+
+    const mailTest = view.querySelector('#mail-test-send');
+    if (mailTest) mailTest.addEventListener('click', async () => {
+      const to = (view.querySelector('#mail-test-to') || {}).value || '';
+      if (!to) return toast('Введите email', 'err');
+      await run(() => api('/api/admin/email/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to })
+      }), 'Тестовое письмо отправлено', loadEmail);
+    });
+
+    const mailSend = view.querySelector('#mail-broadcast-send');
+    if (mailSend) mailSend.addEventListener('click', async () => {
+      const subject = (view.querySelector('#mail-broadcast-subject') || {}).value || '';
+      const body = (view.querySelector('#mail-broadcast-body') || {}).value || '';
+      if (!subject || !body) return toast('Заполните тему и текст', 'err');
+      if (!confirm(`Разослат письмо «${subject}» всем подписчикам?`)) return;
+      const r = await api('/api/admin/email/broadcast', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject, body })
+      });
+      toast(`Поставлено в очередь: ${r.queued} из ${r.recipients}`);
+      loadEmail();
+    });
+
+    const bcSend = view.querySelector('#bc-send');
+    if (bcSend) bcSend.addEventListener('click', async () => {
+      const title = (view.querySelector('#bc-title') || {}).value || '';
+      const body = (view.querySelector('#bc-body') || {}).value || '';
+      const audience = (view.querySelector('#bc-audience') || {}).value || 'all';
+      const ttlHours = Number((view.querySelector('#bc-ttl') || {}).value || 24);
+      if (!title || !body) return toast('Заполните заголовок и текст', 'err');
+      await run(() => api('/api/admin/broadcast', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, audience, ttlHours })
+      }), 'Уведомление отправлено', loadBroadcasts);
+    });
+    view.querySelectorAll('[data-broadcast-del]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить уведомление?')) return;
+        await run(() => api(`/api/admin/broadcasts/${btn.dataset.broadcastDel}`, { method: 'DELETE' }), 'Удалено', loadBroadcasts);
+      });
+    });
+
+    const cacheBtn = view.querySelector('#sys-cache-clear');
+    if (cacheBtn) cacheBtn.addEventListener('click', () => run(() => api('/api/admin/cache/clear', { method: 'POST' }), 'Кеш очищен'));
+    const pricesFull = view.querySelector('#sys-prices-full');
+    if (pricesFull) pricesFull.addEventListener('click', async () => {
+      try {
+        const r = await api('/api/admin/prices/refresh', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ full: true })
+        });
+        if (r.alreadyRunning) toast('Загрузка уже идёт, подождите');
+        else toast('Полная загрузка цен запущена. Прогресс — через несколько секунд.');
+        const start = Date.now();
+        while (Date.now() - start < 600000) {
+          await new Promise(res => setTimeout(res, 4000));
+          try {
+            const s = await api('/api/admin/prices/status');
+            state.priceStatus = s;
+            if (!s.loading) { render(); break; }
+            render();
+          } catch (_) {}
+        }
+        await loadLogs();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    const pricesBtn = view.querySelector('#sys-prices-refresh');
+    if (pricesBtn) pricesBtn.addEventListener('click', () => run(async () => {
+      const r = await api('/api/admin/prices/refresh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 50 })
+      });
+      toast(`Цены обновлены: ${r.updated} из ${r.checked}`);
+      await loadLogs();
+    }));
+    const rebuildBtn = view.querySelector('#sys-catalog-rebuild');
+    if (rebuildBtn) rebuildBtn.addEventListener('click', () => run(async () => {
+      const r = await api('/api/admin/catalog/rebuild', { method: 'POST' });
+      toast(`Каталог обновлён: ${r.size} предметов`);
+    }, null, loadLogs));
+    const maintOn = view.querySelector('#sys-maintenance-on');
+    if (maintOn) maintOn.addEventListener('click', () => run(() => api('/api/admin/maintenance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true, message: 'Идут технические работы, скоро вернёмся' })
+    }), 'Режим техработ включён'));
+    const maintOff = view.querySelector('#sys-maintenance-off');
+    if (maintOff) maintOff.addEventListener('click', () => run(() => api('/api/admin/maintenance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false })
+    }), 'Режим техработ выключен'));
   }
 
   function bindUserModal(view) {
@@ -865,6 +1119,26 @@
         }), banned ? 'Пользователь заблокирован' : 'Блокировка снята', async () => { await openUser(id); loadUsers(); });
       });
     }
+
+    view.querySelectorAll('[data-revoke]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Отозвать этот предмет у пользователя?')) return;
+        const inventoryId = Number(btn.dataset.revoke);
+        await run(() => api(`/api/admin/users/${id}/revoke`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inventoryId })
+        }), 'Предмет отозван', async () => { await openUser(id); loadUsers(); });
+      });
+    });
+
+    const emailUserBtn = view.querySelector('#email-user');
+    if (emailUserBtn) emailUserBtn.addEventListener('click', async () => {
+      const subject = ((view.querySelector('#email-user-subject') || {}).value || '').trim();
+      const body = ((view.querySelector('#email-user-body') || {}).value || '').trim();
+      if (!subject || !body) return toast('Заполните тему и текст', 'err');
+      await run(() => api(`/api/admin/users/${id}/email`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject, body })
+      }), 'Письмо поставлено в очередь');
+    });
   }
 
   async function run(action, successMessage, after) {
@@ -878,8 +1152,14 @@
   }
 
   async function loadSummary() {
-    state.summary = await api('/api/admin/summary');
-    state.role = state.summary.role;
+    const [summary, config] = await Promise.all([
+      api('/api/admin/summary'),
+      api('/api/config').catch(() => null)
+    ]);
+    state.summary = summary;
+    state.role = summary.role;
+    if (config && config.brand) state.brand = String(config.brand).toUpperCase();
+    if (config && config.telegram) state.telegram = config.telegram;
     render();
   }
   async function loadUsers() {
@@ -928,10 +1208,38 @@
     }
   }
   async function loadLogs() {
-    const data = await api('/api/admin/logs');
-    state.logs = data.logs;
-    state.system = data.system;
-    state.infra = data.infra || null;
+    try {
+      const [data, ps] = await Promise.all([
+        api('/api/admin/logs'),
+        api('/api/admin/prices/status').catch(() => null)
+      ]);
+      state.logs = data.logs;
+      state.system = data.system;
+      state.infra = data.infra || null;
+      if (ps) state.priceStatus = ps;
+    } catch (e) {
+      console.warn(e);
+    }
+    render();
+  }
+  async function loadEmail() {
+    try {
+      const [status, queue] = await Promise.all([
+        api('/api/admin/email/status'),
+        api(`/api/admin/email/queue?status=${encodeURIComponent(state.emailQueueStatus)}`)
+      ]);
+      state.emailStatus = status;
+      state.emailQueue = queue.messages || [];
+    } catch (e) {
+      state.emailStatus = { configured: false, description: e.message };
+    }
+    render();
+  }
+  async function loadBroadcasts() {
+    try {
+      const data = await api('/api/admin/broadcasts');
+      state.broadcasts = data.broadcasts || [];
+    } catch (_) { state.broadcasts = []; }
     render();
   }
   async function loadCatalog() {
@@ -955,6 +1263,8 @@
       if (tab === 'coefficients') await loadSummary();
       if (tab === 'bots') await loadBots();
       if (tab === 'promos') await loadPromos();
+      if (tab === 'email') await loadEmail();
+      if (tab === 'broadcast') await loadBroadcasts();
       if (tab === 'support') await loadSupport();
       if (tab === 'logs') await loadLogs();
     } catch (error) {

@@ -18,7 +18,14 @@ try {
 const app = express();
 app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
-const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+function normalizeBaseUrl(value, port) {
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw) return `http://localhost:${port}`;
+
+  if (!/^https?:\/\//i.test(raw)) return `http://${raw}`;
+  return raw;
+}
+const BASE_URL = normalizeBaseUrl(process.env.BASE_URL, PORT);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const BRAND_NAME = process.env.BRAND_NAME || 'КЕЙСЕР';
 const TELEGRAM_URL = process.env.TELEGRAM_URL || 'https://t.me/';
@@ -215,10 +222,6 @@ const RARITY_KEY_BY_NAME = {
   'Extraordinary': 'covert',
   'Contraband': 'contraband'
 };
-const FALLBACK_PRICE_CENTS = {
-  consumer: 2500, industrial: 5000, milspec: 10000,
-  restricted: 25000, classified: 60000, covert: 150000, contraband: 1000000
-};
 
 let STEAM_SKINS_PROMISE = null;
 function fetchSteamSkins() {
@@ -292,36 +295,129 @@ function slugId(name) {
   return slug || 'item';
 }
 
-let SKINPORT_PRICES = null;
-let SKINPORT_PROMISE = null;
-function skinportPrices() {
-  if (!SKINPORT_PROMISE) {
-    SKINPORT_PROMISE = (async () => {
-      const map = new Map();
-      try {
-        const response = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=RUB', {
-          signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined
-        });
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const items = await response.json();
-        for (const item of Array.isArray(items) ? items : []) {
-          const base = String(item.market_hash_name || '')
-            .replace(/^(StatTrak™|Souvenir)\s*/i, '')
-            .replace(/\s*\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '');
-          const price = Number(item.min_price);
-          if (!base || !Number.isFinite(price) || price <= 0) continue;
-          const cents = Math.max(100, Math.round(price * 100));
-          if (!map.has(base) || cents < map.get(base)) map.set(base, cents);
-        }
-        console.log(`[skins] Цены skinport загружены: ${map.size}`);
-      } catch (error) {
-        console.warn('[skins] Цены skinport недоступны:', error.message);
-      }
-      SKINPORT_PRICES = map;
-      return map;
-    })();
+let PRICE_LOADING = false;
+let PRICE_PROGRESS = { total: 0, done: 0, ok: 0 };
+const WEAR_FULL = {
+  FN: 'Factory New',
+  MW: 'Minimal Wear',
+  FT: 'Field-Tested',
+  WW: 'Well-Worn',
+  BS: 'Battle-Scarred'
+};
+const WEAR_SHORT = {
+  'Factory New': 'FN',
+  'Minimal Wear': 'MW',
+  'Field-Tested': 'FT',
+  'Well-Worn': 'WW',
+  'Battle-Scarred': 'BS'
+};
+function wearSuffix(wear) {
+  if (!wear) return '';
+  if (WEAR_FULL[wear]) return ` (${WEAR_FULL[wear]})`;
+  if (WEAR_SHORT[wear]) return ` (${wear})`;
+  return '';
+}
+function steamMarketName(name, wear) {
+  const base = String(name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return `${base}${wearSuffix(wear)}`;
+}
+function parseRubles(s) {
+  if (!s) return 0;
+  const cleaned = String(s).replace(/[^\d,]/g, '').replace(',', '.');
+  const n = Number.parseFloat(cleaned);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n * 100)) : 0;
+}
+const STEAM_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Referer': 'https://steamcommunity.com/market/'
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function fetchSteamPriceRaw(marketHashName) {
+  const url = `https://steamcommunity.com/market/priceoverview/?appid=730&currency=5&market_hash_name=${encodeURIComponent(marketHashName)}`;
+  try {
+    const res = await fetch(url, { headers: STEAM_HEADERS, signal: AbortSignal.timeout(10000) });
+    if (res.status === 429) {
+      return { __rateLimited: true };
+    }
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    return null;
   }
-  return SKINPORT_PROMISE;
+}
+
+let rateLimitedUntil = 0;
+async function waitForRateLimit() {
+  const now = Date.now();
+  if (now < rateLimitedUntil) await sleep(rateLimitedUntil - now);
+}
+
+async function fetchSteamPrice(marketHashName) {
+  if (!marketHashName) return 0;
+  await waitForRateLimit();
+  try {
+    const data = await fetchSteamPriceRaw(marketHashName);
+    if (data && data.__rateLimited) {
+      rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + 30000);
+      return 0;
+    }
+    if (data && data.success) {
+      const lowest = parseRubles(data.lowest_price);
+      const median = parseRubles(data.median_price);
+      const volume = parseInt(String(data.volume || '0').replace(/[^\d]/g, ''), 10) || 0;
+      const price = lowest || median;
+      if (price > 0) {
+        db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+          VALUES (?, ?, ?, ?, 'RUB', 'steam', ?)
+          ON CONFLICT(market_hash_name) DO UPDATE SET lowest_price=excluded.lowest_price,
+            median_price=excluded.median_price, volume=excluded.volume, updated_at=excluded.updated_at`)
+          .run(marketHashName, lowest, median, volume, Date.now());
+        return price;
+      }
+      db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+        VALUES (?, 0, 0, 0, 'RUB', 'steam', ?)
+        ON CONFLICT(market_hash_name) DO UPDATE SET updated_at=excluded.updated_at`).run(marketHashName, Date.now());
+    }
+  } catch (e) {
+
+  }
+  return 0;
+}
+
+function cachedSteamPrice(marketHashName, maxAgeMs = 7 * 24 * 3600 * 1000) {
+  const row = db.prepare('SELECT lowest_price, median_price, updated_at FROM steam_prices WHERE market_hash_name = ?').get(marketHashName);
+  if (!row) return { hit: false, price: 0 };
+  if (maxAgeMs > 0 && Date.now() - Number(row.updated_at) > maxAgeMs) return { hit: false, price: 0, stale: true };
+  return { hit: true, price: Number(row.lowest_price) || Number(row.median_price) || 0, zero: !row.lowest_price && !row.median_price };
+}
+
+async function runPool(tasks, concurrency, onResult) {
+  const results = new Array(tasks.length);
+  let idx = 0;
+  let done = 0;
+  let ok = 0;
+  async function worker() {
+    while (true) {
+      const i = idx++;
+      if (i >= tasks.length) return;
+      try {
+        results[i] = await tasks[i]();
+        if (results[i]) ok++;
+        if (onResult) onResult({ i, value: results[i], done: ++done, ok });
+      } catch (e) {
+        if (onResult) onResult({ i, value: 0, done: ++done, ok });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return { results, ok };
+}
+
+function lookupPriceSync(name, wear) {
+  return cachedSteamPrice(steamMarketName(name, wear)).price;
 }
 
 function dynamicCatalogItem(skin, priceCents) {
@@ -339,7 +435,7 @@ function dynamicCatalogItem(skin, priceCents) {
     wear: '',
     icon: skin.image || '',
     localIcon: '',
-    priceCents: priceCents || FALLBACK_PRICE_CENTS[rarityKey],
+    priceCents: priceCents || 0,
     rarity: R.name,
     rarityKey,
     rarityColor: R.color,
@@ -348,21 +444,82 @@ function dynamicCatalogItem(skin, priceCents) {
 }
 
 async function buildFullCatalog() {
-  const [skins, prices] = await Promise.all([fetchSteamSkins(), skinportPrices()]);
+  const skins = await fetchSteamSkins();
   const staticNames = new Set(STATIC_CATALOG.map(item => item.name));
   const usedIds = new Set(CATALOG_BY_ID.keys());
   const dynamic = [];
+
+  for (const item of STATIC_CATALOG) {
+    const cached = cachedSteamPrice(steamMarketName(item.name, item.wear));
+    if (cached.hit && cached.price) item.priceCents = cached.price;
+  }
   for (const skin of skins) {
     if (!skin || !skin.name) continue;
     if (staticNames.has(skin.name)) continue;
     let id = slugId(skin.name);
     if (usedIds.has(id)) id = `${id}-2`;
     usedIds.add(id);
-    dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, prices.get(skin.name)));
+    const cp = cachedSteamPrice(steamMarketName(skin.name));
+    const priceCents = cp.hit ? cp.price : 0;
+    dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, priceCents));
   }
   CATALOG = [...STATIC_CATALOG, ...dynamic];
   CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
-  console.log(`[catalog] Всего предметов в каталоге: ${CATALOG.length} (статичных ${STATIC_CATALOG.length} + динамических ${dynamic.length})`);
+  cache.del('catalog:public');
+
+  const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
+  console.log(`[catalog] Предметов: ${CATALOG.length} (статичных ${STATIC_CATALOG.length}, динамических ${dynamic.length}); с ценой: ${withPrice}`);
+
+  refreshAllSteamPrices().catch(e => console.warn('[prices]', e.message));
+  return CATALOG;
+}
+
+async function refreshAllSteamPrices() {
+  if (PRICE_LOADING) return PRICE_PROGRESS;
+  PRICE_LOADING = true;
+  try {
+    const items = CATALOG.slice();
+    const tasks = items.map(item => () => fetchSteamPrice(steamMarketName(item.name, item.wear)));
+    PRICE_PROGRESS = { total: tasks.length, done: 0, ok: 0 };
+    const start = Date.now();
+    let lastLog = 0;
+    const { ok } = await runPool(tasks, 4, ({ value, done, ok: okCount }) => {
+      if (value) {
+        const idx = done - 1;
+        if (items[idx]) items[idx].priceCents = value;
+      }
+      PRICE_PROGRESS.done = done;
+      PRICE_PROGRESS.ok = okCount;
+      if (Date.now() - lastLog > 10000) {
+        lastLog = Date.now();
+        const elapsed = ((Date.now() - start) / 1000).toFixed(0);
+        console.log(`[prices] ${done}/${tasks.length} (за ${elapsed}с, цен ${okCount})`);
+      }
+    });
+    cache.del('catalog:public');
+    console.log(`[prices] Готово: ${ok}/${tasks.length} реальных цен за ${((Date.now() - start) / 1000).toFixed(0)}с`);
+    return { total: tasks.length, updated: ok };
+  } finally {
+    PRICE_LOADING = false;
+  }
+}
+
+async function refreshSteamPrices(limit = 0) {
+  if (PRICE_LOADING) return { alreadyRunning: true, ...PRICE_PROGRESS };
+  let items = CATALOG.filter(i => {
+    const key = steamMarketName(i.name, i.wear);
+    const c = cachedSteamPrice(key, 24 * 3600 * 1000);
+    return !c.hit || (c.stale && !c.zero);
+  });
+  if (limit > 0) items = items.slice(0, limit);
+  const tasks = items.map(item => () => fetchSteamPrice(steamMarketName(item.name, item.wear)));
+  let ok = 0;
+  await runPool(tasks, 4, ({ value, i }) => {
+    if (value && items[i]) items[i].priceCents = value;
+    if (value) ok++;
+  });
+  cache.del('catalog:public');
+  return { checked: items.length, updated: ok };
 }
 
 const CASES = [
@@ -419,13 +576,46 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '128kb' }));
 app.use(express.urlencoded({ extended: false }));
+app.use((req, res, next) => {
+  const maintenance = settingGetRaw('maintenance', '');
+  if (!maintenance) return next();
+  if (req.path.startsWith('/api/')) {
+    const account = currentUser(req);
+    if (account && isAdmin(account)) return next();
+    return res.status(503).json({ error: 'На сайте технические работы, попробуйте позже', maintenance: true });
+  }
+  next();
+});
 app.get('/favicon.ico', (_, res) => res.type('svg').sendFile(path.join(__dirname, 'favicon.svg')));
 app.get(['/admin', '/admin.html'], (req, res) => {
   const account = currentUser(req);
   if (!account || !isStaff(account)) return res.status(404).sendFile(path.join(__dirname, 'index.html'));
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
-app.use(express.static(__dirname, { index: 'index.html' }));
+
+const STATIC_DIRS = [
+  { url: '/static', dir: path.join(__dirname, 'static') },
+  { url: '/chunks', dir: path.join(__dirname, 'chunks') }
+];
+for (const { url, dir } of STATIC_DIRS) {
+  app.use(url, express.static(dir, {
+    maxAge: '7d',
+    index: false,
+    fallthrough: true
+  }));
+}
+const STATIC_ROOT_FILES = new Set([
+  '/favicon.svg',
+  '/manifest.json',
+  '/index.html',
+  '/tos.html',
+  '/robots.txt'
+]);
+app.get([...STATIC_ROOT_FILES], (req, res) => {
+  res.sendFile(path.join(__dirname, req.path));
+});
+
+app.get('/', (_, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const db = require('./lib/db');
 const cache = require('./lib/cache');
@@ -513,7 +703,9 @@ db.exec(`
 
 function tableColumns(table) {
   if (db.driver === 'postgres') {
-    return db.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?')
+
+    return db.prepare(`SELECT column_name AS name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = ?`)
       .all(table).map(row => row.name);
   }
   return db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
@@ -542,6 +734,7 @@ ensureColumn('users', 'luck_modifier', 'REAL NOT NULL DEFAULT 0');
 ensureColumn('support_messages', 'from_staff', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('support_messages', 'staff_id', 'INTEGER');
 ensureColumn('support_messages', 'read_at', 'INTEGER');
+ensureColumn('users', 'email_optout', 'INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS transactions(
@@ -595,6 +788,44 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_support_user ON support_messages(user_id, id DESC);
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS email_messages(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient_email TEXT NOT NULL,
+    user_id INTEGER,
+    subject TEXT NOT NULL,
+    body_html TEXT NOT NULL,
+    body_text TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_status ON email_messages(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_email_user ON email_messages(user_id);
+  CREATE TABLE IF NOT EXISTS notifications(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'info',
+    audience TEXT NOT NULL DEFAULT 'all',
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS steam_prices(
+    market_hash_name TEXT PRIMARY KEY,
+    lowest_price INTEGER NOT NULL,
+    median_price INTEGER NOT NULL DEFAULT 0,
+    volume INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'RUB',
+    source TEXT NOT NULL DEFAULT 'steam',
+    updated_at INTEGER NOT NULL
+  );
+`);
+
+const mailer = require('./lib/mailer');
+
 const ADMIN_STEAMIDS = String(process.env.ADMIN_STEAMIDS || '').split(',').map(v => v.trim()).filter(Boolean);
 const SUPPORT_STEAMIDS = String(process.env.SUPPORT_STEAMIDS || '').split(',').map(v => v.trim()).filter(Boolean);
 if (ADMIN_STEAMIDS.length) {
@@ -606,10 +837,15 @@ if (SUPPORT_STEAMIDS.length) {
   for (const id of SUPPORT_STEAMIDS) mark.run(id);
 }
 
-function settingGet(key, fallback) {
+function settingGetRaw(key, fallback = '') {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  if (!row) return fallback;
-  const number = Number(row.value);
+  return row ? row.value : fallback;
+}
+function settingGet(key, fallback) {
+  const raw = settingGetRaw(key, null);
+  if (raw == null) return fallback;
+  if (raw === '') return fallback;
+  const number = Number(raw);
   return Number.isFinite(number) ? number : fallback;
 }
 function settingSet(key, value) {
@@ -618,7 +854,10 @@ function settingSet(key, value) {
 }
 function roleOf(account) {
   if (!account) return 'user';
-  if (ADMIN_STEAMIDS.includes(String(account.steamid))) return 'admin';
+  const steamid = String(account.steamid);
+
+  if (ADMIN_STEAMIDS.includes(steamid)) return 'admin';
+  if (SUPPORT_STEAMIDS.includes(steamid)) return 'support';
   return account.role || 'user';
 }
 function isAdmin(account) { return roleOf(account) === 'admin'; }
@@ -684,11 +923,22 @@ function currentUser(req) {
   `).get(token, Date.now()) || null;
 }
 function setCookie(res, token) {
-  res.setHeader('Set-Cookie', `session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Secure=${BASE_URL.startsWith('https://')}; Max-Age=2592000`);
+  const parts = [
+    `session=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=2592000'
+  ];
+
+  if (BASE_URL.startsWith('https://')) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
 }
 function clearCookie(res, token) {
   if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(token);
-  res.setHeader('Set-Cookie', 'session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  const parts = ['session=', 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (BASE_URL.startsWith('https://')) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
 }
 function broadcast(type, payload) {
   const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -714,6 +964,14 @@ function steamLogin(req) {
   return `https://steamcommunity.com/openid/login?${params}`;
 }
 async function verifySteam(req) {
+
+  const expectedReturnTo = `${requestBase(req)}/auth/steam/callback`;
+  const providedReturnTo = String(
+    req.query['openid.return_to'] || req.query.openid_return_to || ''
+  );
+  if (providedReturnTo && providedReturnTo !== expectedReturnTo) {
+    throw new Error('OpenID return_to mismatch');
+  }
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) params.set(key, String(value));
   params.set('openid.mode', 'check_authentication');
@@ -1038,7 +1296,8 @@ app.get('/api/settings', (req, res) => {
     nickname: account.name,
     tradeLink: account.trade_link || '',
     privacy: account.profile_privacy || 'private',
-    streamerMode: !!account.streamer_mode
+    streamerMode: !!account.streamer_mode,
+    emailOptout: !!account.email_optout
   });
 });
 app.post('/api/settings', (req, res) => {
@@ -1177,15 +1436,31 @@ app.post('/api/upgrade', (req, res) => {
       if (!from) throw new Error('Исходный предмет уже недоступен');
       if (addBalanceCents > Number(account.balance_cents || 0)) throw new Error('Недостаточно средств на балансе');
       const totalValue = Number(from.price_cents) + addBalanceCents;
+
+      const minTarget = boostPercent >= 100
+        ? Math.ceil(totalValue * boostPercent / 100)
+        : Math.ceil(totalValue * 100 / boostPercent);
+      if (Number(target.priceCents) < minTarget) {
+        throw new Error('Цель не соответствует выбранному проценту апгрейда');
+      }
+
+      const currentBalance = Number(
+        db.prepare('SELECT balance_cents AS balance FROM users WHERE id = ?').get(account.id).balance
+      );
+      if (addBalanceCents > currentBalance) throw new Error('Недостаточно средств на балансе');
       if (addBalanceCents > 0) {
-        db.prepare('UPDATE users SET balance_cents = balance_cents - ?, updated_at = ? WHERE id = ?')
-          .run(addBalanceCents, Date.now(), account.id);
+        const charged = db.prepare(`
+          UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
+          WHERE id = ? AND balance_cents >= ?
+        `).run(addBalanceCents, Date.now(), account.id, addBalanceCents);
+        if (!charged.changes) throw new Error('Недостаточно средств на балансе');
         const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
         recordTransaction(account.id, 'upgrade_stake', -addBalanceCents, after, 'Ставка в апгрейде');
       }
       const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
       const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(account.luck_modifier || 0)));
       const effectiveChance = Math.min(100, Math.max(0, baseChance * (1 + luck / 100)));
+
       const chance = baseChance;
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < effectiveChance;
@@ -1328,6 +1603,7 @@ app.get('/api/admin/users/:id', requireStaff, (req, res) => {
       id: user.id, steamid: user.steamid, name: user.name, avatar: user.avatar,
       balanceCents: user.balance_cents, role: roleOf(user), banned: !!user.banned,
       banReason: user.ban_reason, isBot: !!user.is_bot, luckModifier: user.luck_modifier,
+      email: user.support_email || '', emailOptout: !!user.email_optout,
       createdAt: user.created_at
     },
     inventory, transactions
@@ -1607,6 +1883,7 @@ app.post('/api/admin/support/:userId', requireStaff, (req, res) => {
   db.prepare('INSERT INTO support_messages(user_id,message,from_staff,staff_id,created_at) VALUES(?,?,1,?,?)')
     .run(userId, message, req.account.id, Date.now());
   adminLog(req.account, 'support_reply', user.name, message.slice(0, 60));
+  try { notifyStaffReply(userId, message); } catch (_) {}
   res.json({ ok: true });
 });
 
@@ -1675,7 +1952,300 @@ app.post('/api/support/messages', (req, res) => {
   const now = Date.now();
   const result = db.prepare('INSERT INTO support_messages(user_id,message,created_at) VALUES(?,?,?)')
     .run(account.id, message, now);
-  res.json({ id: result.lastInsertRowid, message, createdAt: now });
+  queue.publish('support.notify', { userId: account.id, message, createdAt: now });
+  res.json({ id: Number(result.lastInsertRowid), message, createdAt: now });
+});
+
+app.get('/api/notifications', (req, res) => {
+  const now = Date.now();
+  const rows = db.prepare(`
+    SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt
+    FROM notifications
+    WHERE (expires_at IS NULL OR expires_at > ?)
+    ORDER BY id DESC LIMIT 20
+  `).all(now);
+  res.json({ notifications: rows });
+});
+
+app.get('/api/unsubscribe', (req, res) => {
+  const userId = Number(req.query.u);
+  const token = String(req.query.t || '');
+  if (!Number.isSafeInteger(userId) || !token) return res.status(400).send('Некорректная ссылка');
+  if (!mailer.verifyUnsubscribeToken(userId, token)) return res.status(400).send('Ссылка устарела');
+  const user = db.prepare('SELECT id, email_optout FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).send('Пользователь не найден');
+  if (!user.email_optout) db.prepare('UPDATE users SET email_optout = 1 WHERE id = ?').run(userId);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send('<!doctype html><meta charset="utf-8"><title>Отписка</title><div style="font-family:Segoe UI,Roboto,sans-serif;text-align:center;padding:60px;color:#e6e9ee;background:#0a0b0f;min-height:100vh"><h2>Вы отписаны от рассылки</h2><p>Мы больше не будем присылать вам письма.</p><p><a style="color:#56a8ff" href="/">Вернуться на сайт</a></p></div>');
+});
+app.post('/api/unsubscribe', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'login_required' });
+  const optout = req.body?.optout !== false;
+  db.prepare('UPDATE users SET email_optout = ? WHERE id = ?').run(optout ? 1 : 0, account.id);
+  res.json({ ok: true, optout });
+});
+
+app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
+  const title = String(req.body?.title || '').trim().slice(0, 120);
+  const body = String(req.body?.body || '').trim().slice(0, 1000);
+  const audience = String(req.body?.audience || 'all');
+  const ttlHours = Math.max(0, Math.min(720, Number(req.body?.ttlHours || 24)));
+  if (!title || !body) return res.status(400).json({ error: 'Укажите заголовок и текст' });
+  if (!['all', 'authenticated', 'guests'].includes(audience)) return res.status(400).json({ error: 'Некорректная аудитория' });
+  const now = Date.now();
+  const expires = ttlHours ? now + ttlHours * 3600000 : null;
+  const result = db.prepare(`
+    INSERT INTO notifications(title,body,kind,audience,created_at,expires_at)
+    VALUES(?,?,?,?,?,?)
+  `).run(title, body, 'broadcast', audience, now, expires);
+  broadcast('notify', { id: Number(result.lastInsertRowid), title, body, audience, createdAt: now });
+  adminLog(req.account, 'broadcast', title, body.slice(0, 100));
+  res.json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+
+app.get('/api/admin/broadcasts', requireStaff, (_, res) => {
+  const rows = db.prepare(`
+    SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt
+    FROM notifications ORDER BY id DESC LIMIT 50
+  `).all();
+  res.json({ broadcasts: rows });
+});
+
+app.delete('/api/admin/broadcasts/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM notifications WHERE id = ?').run(Number(req.params.id));
+  adminLog(req.account, 'broadcast_delete', req.params.id, '');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/maintenance', requireAdmin, (req, res) => {
+  const enabled = !!req.body?.enabled;
+  const message = String(req.body?.message || '').slice(0, 300);
+  if (enabled) settingSet('maintenance', message || 'Технические работы');
+  else db.prepare("DELETE FROM settings WHERE key = 'maintenance'").run();
+  adminLog(req.account, 'maintenance', enabled ? 'on' : 'off', message);
+  res.json({ ok: true, enabled, message: enabled ? settingGetRaw('maintenance', '') : '' });
+});
+
+app.post('/api/admin/catalog/rebuild', requireAdmin, async (req, res) => {
+  try {
+    await buildFullCatalog();
+    adminLog(req.account, 'catalog_rebuild', '', '');
+    res.json({ ok: true, size: CATALOG.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/prices/refresh', requireAdmin, async (req, res) => {
+  const limit = Math.max(0, Math.min(5000, Number(req.body?.limit || 50)));
+  const full = !!req.body?.full;
+  try {
+    if (full) {
+      if (PRICE_LOADING) return res.json({ ok: true, alreadyRunning: true, ...PRICE_PROGRESS });
+      res.json({ ok: true, started: true, total: CATALOG.length });
+      refreshAllSteamPrices().catch(() => {});
+      return;
+    }
+    const result = await refreshSteamPrices(limit);
+    adminLog(req.account, 'prices_refresh', '', `updated=${result.updated}`);
+    res.json({ ok: true, ...result, size: CATALOG.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/prices/status', requireStaff, (_req, res) => {
+  const cached = db.prepare('SELECT COUNT(*) c FROM steam_prices').get().c;
+  const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
+  res.json({
+    loading: PRICE_LOADING,
+    progress: PRICE_PROGRESS,
+    cachedPrices: cached,
+    catalogItems: CATALOG.length,
+    withPrice
+  });
+});
+
+app.post('/api/admin/cache/clear', requireAdmin, (req, res) => {
+  cache.del('catalog:public');
+  cache.del('drops:latest');
+  cache.del('stats:global');
+  adminLog(req.account, 'cache_clear', '', '');
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/email/status', requireStaff, (_, res) => {
+  const pending = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='pending'").get().c;
+  const sent = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='sent'").get().c;
+  const failed = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='failed'").get().c;
+  res.json({
+    configured: mailer.configured(),
+    description: mailer.describe(),
+    pending, sent, failed
+  });
+});
+
+app.get('/api/admin/email/queue', requireStaff, (req, res) => {
+  const status = String(req.query.status || '').trim();
+  const rows = status
+    ? db.prepare(`SELECT id, recipient_email AS "to", user_id AS userId, subject, status, attempts, error, created_at AS createdAt, sent_at AS sentAt
+        FROM email_messages WHERE status = ? ORDER BY id DESC LIMIT 100`).all(status)
+    : db.prepare(`SELECT id, recipient_email AS "to", user_id AS userId, subject, status, attempts, error, created_at AS createdAt, sent_at AS sentAt
+        FROM email_messages ORDER BY id DESC LIMIT 100`).all();
+  res.json({ messages: rows });
+});
+
+function enqueueEmail({ to, userId, subject, html, text = '' }) {
+  if (!to || !subject) return 0;
+  const result = db.prepare(`
+    INSERT INTO email_messages(recipient_email,user_id,subject,body_html,body_text,status,created_at)
+    VALUES(?,?,?,?,?, 'pending', ?)
+  `).run(to, userId || null, subject, html || '', text, Date.now());
+  queue.publish('email.process', { id: Number(result.lastInsertRowid) });
+  return Number(result.lastInsertRowid);
+}
+
+app.post('/api/admin/email/test', requireAdmin, async (req, res) => {
+  const to = String(req.body?.to || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(to)) return res.status(400).json({ error: 'Укажите корректный email' });
+  try {
+    const result = await mailer.sendMail({
+      to,
+      subject: 'Тестовое письмо КЕЙСЕР',
+      html: '<p>Это тестовое письмо. Если вы его видите — SMTP настроен правильно.</p>',
+      text: 'Это тестовое письмо.'
+    });
+    adminLog(req.account, 'email_test', to, result.messageId || '');
+    res.json({ ok: true, messageId: result.messageId });
+  } catch (error) {
+    res.status(502).json({ error: error.message, code: error.code });
+  }
+});
+
+app.post('/api/admin/email/broadcast', requireAdmin, (req, res) => {
+  const subject = String(req.body?.subject || '').trim().slice(0, 200);
+  const body = String(req.body?.body || '').trim();
+  if (!subject || !body) return res.status(400).json({ error: 'Укажите тему и текст' });
+  if (body.length > 5000) return res.status(400).json({ error: 'Слишком длинное письмо' });
+  const rows = db.prepare(`
+    SELECT id, support_email AS email FROM users
+    WHERE support_email IS NOT NULL AND support_email != '' AND email_optout = 0 AND is_bot = 0 AND banned = 0
+  `).all();
+  let queued = 0;
+  const html = body.replace(/\n/g, '<br>');
+  for (const row of rows) {
+    try { enqueueEmail({ to: row.email, userId: row.id, subject, html }); queued++; } catch (_) {}
+  }
+  adminLog(req.account, 'email_broadcast', subject, `recipients=${queued}`);
+  res.json({ ok: true, queued, recipients: rows.length });
+});
+
+app.post('/api/admin/users/:id/email', requireStaff, (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (!user.support_email) return res.status(400).json({ error: 'У пользователя не указан email' });
+  const subject = String(req.body?.subject || '').trim().slice(0, 200);
+  const body = String(req.body?.body || '').trim();
+  if (!subject || !body) return res.status(400).json({ error: 'Укажите тему и текст' });
+  const html = body.replace(/\n/g, '<br>');
+  const mailId = enqueueEmail({ to: user.support_email, userId: user.id, subject, html });
+  adminLog(req.account, 'email_user', user.name, subject);
+  res.json({ ok: true, mailId });
+});
+
+app.post('/api/admin/users/:id/revoke', requireAdmin, (req, res) => {
+  try {
+  const id = Number(req.params.id);
+  const itemId = Number((req.body && req.body.inventoryId) || NaN);
+  if (!Number.isSafeInteger(id) || !Number.isSafeInteger(itemId)) return res.status(400).json({ error: 'Предмет не найден' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  const item = db.prepare("SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'").get(itemId, id);
+  if (!item) return res.status(404).json({ error: 'Активный предмет не найден' });
+  db.prepare("UPDATE site_inventory SET status = 'revoked', updated_at = ? WHERE id = ?").run(Date.now(), itemId);
+  adminLog(req.account, 'item_revoke', user.name, item.item_name);
+  res.json({ ok: true });
+  } catch (e) {
+    console.error('[revoke]', e);
+    if (!res.headersSent) res.status(500).json({ error: e.message || 'Ошибка' });
+  }
+});
+
+queue.on('email.process', async job => {
+  const mail = db.prepare('SELECT * FROM email_messages WHERE id = ?').get(job.id);
+  if (!mail || mail.status !== 'pending') return;
+  try {
+    await mailer.sendMail({
+      to: mail.recipient_email,
+      userId: mail.user_id,
+      subject: mail.subject,
+      html: mail.body_html,
+      text: mail.body_text
+    });
+    db.prepare("UPDATE email_messages SET status='sent', attempts=attempts+1, sent_at=?, error='' WHERE id=?")
+      .run(Date.now(), mail.id);
+  } catch (error) {
+    const attempts = Number(mail.attempts || 0) + 1;
+    const nextStatus = attempts >= 3 ? 'failed' : 'pending';
+    db.prepare("UPDATE email_messages SET status=?, attempts=?, error=? WHERE id=?")
+      .run(nextStatus, attempts, String(error.message || error).slice(0, 300), mail.id);
+    if (nextStatus === 'pending') {
+      setTimeout(() => queue.publish('email.process', { id: mail.id }), 60_000 * attempts);
+    }
+  }
+});
+
+queue.on('support.notify', async ({ userId, message }) => {
+  try {
+    const user = db.prepare('SELECT support_email AS email, name FROM users WHERE id = ?').get(userId);
+    if (!user || !user.email || user.email_optout) return;
+    const html = `<p>Здравствуйте, ${escapeHtml(user.name) || 'игрок'}!</p>
+      <p>Мы получили ваше обращение в поддержку:</p>
+      <blockquote style="border-left:3px solid #56a8ff;padding:8px 12px;background:rgba(86,168,255,.08);white-space:pre-wrap;">${escapeHtml(message)}</blockquote>
+      <p>Ответ придёт на этот же адрес, как только оператор его напишет.</p>`;
+    enqueueEmail({
+      to: user.email,
+      userId,
+      subject: 'Ваше обращение в поддержку принято',
+      html
+    });
+  } catch (_) {}
+});
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function notifyStaffReply(userId, message) {
+  const user = db.prepare('SELECT support_email AS email, name, email_optout FROM users WHERE id = ?').get(userId);
+  if (!user || !user.email || user.email_optout) return;
+  const html = `<p>Здравствуйте, ${escapeHtml(user.name) || 'игрок'}!</p>
+    <p>Поддержка ответила на ваше обращение:</p>
+    <blockquote style="border-left:3px solid #44c987;padding:8px 12px;background:rgba(68,201,135,.08);white-space:pre-wrap;">${escapeHtml(message)}</blockquote>
+    <p>Ответить можно прямо в чате на сайте.</p>`;
+  enqueueEmail({ to: user.email, userId, subject: 'Ответ поддержки КЕЙСЕР', html });
+}
+
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Маршрут не найден' });
+  }
+  const base = path.basename(req.path);
+  if (path.extname(req.path) || base.startsWith('.')) {
+    return res.status(404).send('Not found');
+  }
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.use((error, req, res, _next) => {
+  console.error('[error]', error && error.stack ? error.stack : error);
+  if (res.headersSent) return;
+  if (req.path.startsWith('/api/')) {
+    return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+  res.status(500).send('Внутренняя ошибка сервера');
 });
 
 (async () => {
@@ -1684,5 +2254,10 @@ app.post('/api/support/messages', (req, res) => {
   } catch (error) {
     console.warn('[catalog] Не удалось построить полный каталог:', error.message);
   }
-  app.listen(PORT, '0.0.0.0', () => console.log(`${BRAND_NAME}: ${BASE_URL}`));
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`${BRAND_NAME}: ${BASE_URL}`);
+    setInterval(() => {
+      refreshSteamPrices(0).catch(() => {});
+    }, 24 * 60 * 60 * 1000).unref?.();
+  });
 })();

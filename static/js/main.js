@@ -164,6 +164,24 @@ function listen() {
     S.drops = S.drops.slice(0, 30);
     if (S.page === 'rewards' || S.page === 'upgrade') render();
   });
+  events.addEventListener('notify', event => {
+    try {
+      const n = JSON.parse(event.data);
+      toast(n.title ? `${n.title}: ${n.body}` : n.body);
+    } catch (_) {}
+  });
+  fetch('/api/notifications').then(r => r.json()).then(data => {
+    const list = (data && data.notifications) || [];
+    const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
+    for (const n of list) {
+      if (n.audience === 'guests' && S.me?.authenticated) continue;
+      if (n.audience === 'authenticated' && !S.me?.authenticated) continue;
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      toast(n.title ? `${n.title}: ${n.body}` : n.body);
+    }
+    localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-50)));
+  }).catch(() => {});
   document.addEventListener('click', event => {
     if (!document.body.contains(event.target)) return;
     let changed = false;
@@ -315,7 +333,9 @@ function upgradePage() {
   const baseValue = (S.from ? Number(S.from.priceCents) : 0) + S.addBalance;
   const minimumPrice = S.from ? boostMinimumPrice(baseValue, S.boost) : 0;
   const query = S.targetSearch.trim().toLowerCase();
-  const minTarget = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+
+  const userMin = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+  const minTarget = Math.max(minimumPrice, Number.isFinite(userMin) ? userMin : 0);
   const maxTarget = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
   const targets = S.catalog.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
   const pageSize = 16;
@@ -847,12 +867,23 @@ function choose(id, side) {
   if (side === 'from') {
     S.from = item;
     setBoost(S.boost, false);
-  } else S.to = item;
+  } else {
+    // Защита от рассинхрона фильтра/состояния: цель должна удовлетворять бусту.
+    const baseValue = upgradeBaseValue();
+    const minimum = boostMinimumPrice(baseValue, S.boost);
+    if (Number(item.priceCents) < minimum) {
+      toast('Цель не соответствует выбранному проценту апгрейда', 'error');
+      return;
+    }
+    S.to = item;
+  }
   recalculateChance();
   render();
 }
 function setBoost(value, shouldRender = true) {
   S.boost = Number(value);
+  // Смена буста меняет множество доступных целей — сбрасываем постраничку.
+  S.targetPage = 1;
   const targets = upgradeTargets();
   S.to = targets[0] || null;
   recalculateChance();
@@ -861,6 +892,13 @@ function setBoost(value, shouldRender = true) {
 function setAddBalance(value) {
   const balanceCents = Number(S.me.user.balanceCents || 0);
   S.addBalance = Math.round(Math.min(Math.max(Number(value) || 0, 0), balanceCents / 100) * 100);
+  // Добавление баланса снижает минимальную стоимость цели — сбрасываем страницу.
+  S.targetPage = 1;
+  // Если выбранная цель больше не удовлетворяет минимому, сбрасываем её.
+  if (S.to) {
+    const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
+    if (Number(S.to.priceCents) < minimum) S.to = null;
+  }
   recalculateChance();
   render();
 }
@@ -884,7 +922,10 @@ function applyTargetFilters() {
 function setTargetPage(page) {
   const pageSize = 16;
   const query = S.targetSearch.trim().toLowerCase();
-  const minT = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+  const baseValue = upgradeBaseValue();
+  const minimumPrice = S.from ? boostMinimumPrice(baseValue, S.boost) : 0;
+  const userMin = S.targetMin === '' ? 0 : Number(S.targetMin) * 100;
+  const minT = Math.max(minimumPrice, Number.isFinite(userMin) ? userMin : 0);
   const maxT = S.targetMax === '' ? Infinity : Number(S.targetMax) * 100;
   const filtered = S.catalog.filter(item => item.priceCents >= minT && item.priceCents <= maxT && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
   const count = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -1431,6 +1472,15 @@ Object.assign(window, {
   closeUpgradeResult, closeCaseReveal, openInventory
 });
 if (typeof window.openNotifications !== 'function') {
-  window.openNotifications = () => {};
+  window.openNotifications = async () => {
+    try {
+      const data = await api('/api/notifications');
+      const list = (data.notifications || []);
+      if (!list.length) { toast('Уведомлений нет'); return; }
+      const body = list.slice(0, 10).map(n => `<div style="padding:8px 0;border-bottom:1px solid rgba(86,168,255,.12)"><b style="color:#56A8FF">${esc(n.title)}</b><div style="color:#dce5f1;margin-top:4px">${esc(n.body)}</div></div>`).join('');
+      const html = `<div class="notifications-modal" style="position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:rgba(0,0,0,.65);backdrop-filter:blur(3px)" onclick="if(event.target===this)this.remove()"><div style="background:linear-gradient(180deg,#1b2436,#12151f);border:1px solid rgba(86,168,255,.25);border-radius:10px;padding:20px;max-width:480px;width:90%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)"><h3 style="margin:0 0 12px;color:#fff">Уведомления</h3>${body}<button class="upgrade" style="margin-top:14px;width:100%" onclick="this.closest('.notifications-modal').remove()">Закрыть</button></div></div>`;
+      document.body.insertAdjacentHTML('beforeend', html);
+    } catch (e) { toast(e.message, 'error'); }
+  };
 }
 boot();

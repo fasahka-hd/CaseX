@@ -54,7 +54,8 @@ function sourceTables() {
 }
 
 function targetColumns(table) {
-  return target.prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?')
+  return target.prepare(`SELECT column_name AS name FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = ?`)
     .all(table).map(row => row.name);
 }
 
