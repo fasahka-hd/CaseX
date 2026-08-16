@@ -30,7 +30,13 @@
     emailStatus: null,
     emailQueue: [],
     emailQueueStatus: '',
-    broadcasts: []
+    broadcasts: [],
+    editingCase: null,
+    caseBuilderSearch: '',
+    caseBuilderContents: [],
+    online: [],
+    priceQueue: null,
+    logFilters: { admin: '', action: '', q: '', from: '', to: '' }
   };
 
   const ICONS = {
@@ -441,21 +447,40 @@
       </div>`;
   }
 
+  function calcEV(contents) {
+    if (!contents.length) return 0;
+    const total = contents.reduce((s,[,w])=>s+Number(w||0),0) || 1;
+    let ev = 0;
+    for (const [cid,w] of contents) {
+      const it = state.catalog.find(x=>x.catalogId===cid) || state.cases.flatMap(c=>c.contents).find(x=>x.catalogId===cid);
+      const price = it ? Number(it.priceCents||0) : 0;
+      ev += (Number(w)/total)*price;
+    }
+    return Math.round(ev);
+  }
+
   function casesView() {
-    const cases = state.cases.map(item => `
+    const cases = state.cases.map(item => {
+      const ev = item.evCents || 0;
+      const profit = item.profitCents || 0;
+      const roi = item.priceCents ? Math.round(profit/item.priceCents*100) : 0;
+      const img = item.image ? `<img src="${esc(item.image)}" style="width:38px;height:28px;object-fit:contain;background:#111;border-radius:4px">` : `<div style="width:38px;height:28px;background:#111;border-radius:4px;display:grid;place-items:center;color:#555">?</div>`;
+      return `
       <tr>
-        <td><b>${esc(item.name)}</b><small class="muted" style="display:block">${esc(item.id)}</small></td>
-        <td class="num mono">
-          <input type="number" step="0.01" style="width:110px" data-price="${esc(item.id)}" value="${(item.priceCents / 100).toFixed(2)}" ${isAdmin() ? '' : 'disabled'}>
+        <td><div style="display:flex;gap:8px;align-items:center">${img}<div><b>${esc(item.name)}</b><small class="muted" style="display:block">${esc(item.id)} ${item.discountPercent?`<span style="color:#44c987">-${item.discountPercent}%</span>`:''}</small></div></div></td>
+        <td class="num mono">${money(item.priceCents)}${item.basePriceCents!==item.priceCents?`<br><small style="text-decoration:line-through;color:#777">${money(item.basePriceCents)}</small>`:''}<br><small class="muted">EV ${money(ev)} ROI ${roi}%</small></td>
+        <td><span class="tag ${item.enabled ? 'on' : 'off'}">${item.enabled ? 'вкл' : 'выкл'}</span>${item.once?'<span class="tag warn" style="margin-left:4px">once</span>':''}${item.maxOpenings?`<small class="muted" style="display:block">${item.totalOpened||0}/${item.maxOpenings}</small>`:''}</td>
+        <td class="num mono">${num(item.opened)}<br><small class="muted">${money(item.revenueCents)}</small></td>
+        <td class="num" style="min-width:220px">
+          ${isAdmin() ? `
+          <button class="act small" data-editcase="${esc(item.id)}">Редактировать</button>
+          <button class="act small" data-previewcase="${esc(item.id)}">EV</button>
+          <button class="act small ${item.enabled ? 'danger' : 'ok'}" data-togglecase="${esc(item.id)}" data-enabled="${item.enabled ? 1 : 0}">${item.enabled ? 'Выкл' : 'Вкл'}</button>
+          <button class="act small danger" data-delcase="${esc(item.id)}">Удалить</button>
+          ` : ''}
         </td>
-        <td><span class="tag ${item.enabled ? 'on' : 'off'}">${item.enabled ? 'включён' : 'выключен'}</span></td>
-        <td class="num mono">${num(item.opened)}</td>
-        <td class="num mono">${money(item.revenueCents)}</td>
-        <td class="num">
-          ${isAdmin() ? `<button class="act small primary" data-savecase="${esc(item.id)}">Сохранить</button>
-          <button class="act small ${item.enabled ? 'danger' : 'ok'}" data-togglecase="${esc(item.id)}" data-enabled="${item.enabled ? 1 : 0}">${item.enabled ? 'Выключить' : 'Включить'}</button>` : ''}
-        </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
 
     const drops = state.drops.length ? state.drops.map(drop => `
       <tr>
@@ -467,12 +492,15 @@
         <td class="num">${isAdmin() ? `<button class="act small danger" data-deldrop="${drop.id}">Удалить</button>` : ''}</td>
       </tr>`).join('') : '<tr><td colspan="6" class="empty-row">Дропов нет</td></tr>';
 
+    const builder = state.editingCase ? caseBuilderModal() : '';
+
     return `
       <div class="block">
-        <h2>Кейсы</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center"><h2>Кейсы — конструктор</h2>${isAdmin()?`<button class="act primary" id="case-create-new">+ Создать кейс</button>`:''}</div>
+        <div class="block-body"><p class="muted" style="margin:0">Кейсы хранятся в <code>custom_cases</code> таблице (SQLite/Postgres), а не в JSON файле — безопасно. Поддерживается PNG превью, скидки, лимиты по времени/кол-ву/уровню, once. EV считается автоматически.</p></div>
         <div class="table-scroll"><table>
-          <thead><tr><th>Кейс</th><th class="num">Цена ₽</th><th>Статус</th><th class="num">Открытий</th><th class="num">Сборы</th><th></th></tr></thead>
-          <tbody>${cases}</tbody>
+          <thead><tr><th>Кейс</th><th class="num">Цена / EV</th><th>Статус</th><th class="num">Открытий / Сборы</th><th></th></tr></thead>
+          <tbody>${cases || '<tr><td colspan=5 class="empty-row">Кейсов нет</td></tr>'}</tbody>
         </table></div>
       </div>
       <div class="block">
@@ -481,6 +509,75 @@
           <thead><tr><th>Игрок</th><th>Предмет</th><th class="num">Цена</th><th>Источник</th><th>Дата</th><th></th></tr></thead>
           <tbody>${drops}</tbody>
         </table></div>
+      </div>
+      ${builder}
+      <style>
+        .case-builder {position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:grid;place-items:center;padding:20px}
+        .case-builder-card {background:#12151f;border:1px solid rgba(86,168,255,.2);border-radius:12px;width:100%;max-width:1100px;max-height:90vh;overflow:auto;padding:18px;display:grid;gap:14px}
+        .case-builder-grid {display:grid;grid-template-columns:1fr 1fr;gap:14px}
+        .case-builder-list {max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+        .case-builder-item {display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06)}
+      </style>`;
+  }
+
+  function caseBuilderModal() {
+    const c = state.editingCase;
+    const isNew = !state.cases.some(x=>x.id===c.id);
+    const totalW = c.contents.reduce((s,[,w])=>s+Number(w||0),0) || 1;
+    const ev = calcEV(c.contents);
+    const profit = Number(c.priceCents||0) - ev;
+    const catalogFiltered = state.catalog.filter(it => {
+      if (!state.caseBuilderSearch) return true;
+      const q = state.caseBuilderSearch.toLowerCase();
+      return it.name.toLowerCase().includes(q) || it.catalogId.toLowerCase().includes(q);
+    }).slice(0,80);
+    return `
+      <div class="case-builder" id="case-builder">
+        <div class="case-builder-card">
+          <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">${isNew?'Новый кейс':'Редактировать: '+esc(c.id)}</h2><button class="act small" id="case-builder-close">✕</button></div>
+          <div class="case-builder-grid">
+            <div style="display:grid;gap:10px">
+              <label>ID (латиница) <input id="cb-id" value="${esc(c.id)}" ${isNew?'':'disabled'} placeholder="my_case"></label>
+              <label>Название <input id="cb-name" value="${esc(c.name)}" placeholder="NEON CASE"></label>
+              <label>Описание <input id="cb-desc" value="${esc(c.description||'')}" placeholder="Шанс на..."></label>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <label>Цена ₽ <input id="cb-price" type="number" step="0.01" value="${(Number(c.priceCents||0)/100).toFixed(2)}"></label>
+                <label>Скидка % <input id="cb-discount" type="number" min="0" max="90" value="${Number(c.discount_percent||c.discountPercent||0)}"></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <label>Макс открытий (0=∞) <input id="cb-max" type="number" value="${Number(c.max_openings||c.maxOpenings||0)}"></label>
+                <label>Мин уровень <input id="cb-level" type="number" value="${Number(c.level_min||c.levelMin||0)}"></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <label>Старт (timestamp) <input id="cb-start" type="number" value="${c.starts_at||c.startsAt||''}" placeholder="пусто"></label>
+                <label>Конец <input id="cb-end" type="number" value="${c.ends_at||c.endsAt||''}" placeholder="пусто"></label>
+              </div>
+              <label><input id="cb-once" type="checkbox" ${c.once?'checked':''}> Once (1 раз на игрока)</label>
+              <label><input id="cb-enabled" type="checkbox" ${c.enabled?'checked':''}> Включен</label>
+              <label>Превью PNG URL или загрузка <input id="cb-image" value="${esc(c.image||'')}" placeholder="/static/cases/my.png"></label>
+              <div class="row"><input type="file" id="cb-file" accept=".png,.jpg,.jpeg,.webp,.svg"><button class="act small" id="cb-upload">Загрузить PNG</button></div>
+              <div style="background:#0f141f;border-radius:8px;padding:8px;font-size:12px">
+                <div>Вес всего: <b>${totalW.toFixed(2)}</b> | EV: <b>${money(ev)}</b> | Профит: <b style="color:${profit>=0?'#44c987':'#eb4b4b'}">${money(profit)}</b> | ROI: <b>${c.priceCents?Math.round(profit/c.priceCents*100):0}%</b></div>
+              </div>
+            </div>
+            <div style="display:grid;gap:8px">
+              <div><b>Содержимое кейса (${c.contents.length})</b> — вес = шанс. Drag&drop: клик по предмету из каталога → добавить. Можно менять вес.</div>
+              <div class="case-builder-list">
+                ${c.contents.map(([cid,w],idx)=> {
+                  const it = state.catalog.find(x=>x.catalogId===cid);
+                  const name = it ? it.name : cid;
+                  return `<div class="case-builder-item"><span>${esc(name)} <small class="muted">${esc(cid)}</small></span><span style="display:flex;gap:6px"><input data-cb-weight="${idx}" type="number" step="0.1" value="${w}" style="width:70px"><button class="act small danger" data-cb-remove="${idx}">✕</button></span></div>`;
+                }).join('') || '<div class="empty-row" style="padding:12px">Пусто — добавь предметы справа</div>'}
+              </div>
+              <div><b>Каталог — добавить предметы (клик)</b></div>
+              <input id="cb-search" placeholder="Поиск по имени / id" value="${esc(state.caseBuilderSearch)}" style="width:100%">
+              <div class="case-builder-list">
+                ${catalogFiltered.map(it=>`<div class="case-builder-item"><span><small style="color:${esc(it.rarityColor)}">●</small> ${esc(it.name)} <small class="muted">${esc(it.catalogId)} — ${money(it.priceCents)}</small></span><button class="act small" data-cb-add="${esc(it.catalogId)}">+</button></div>`).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="row" style="justify-content:flex-end"><button class="act" id="case-builder-cancel">Отмена</button><button class="act primary" id="case-builder-save">${isNew?'Создать':'Сохранить'}</button></div>
+        </div>
       </div>`;
   }
 
@@ -710,42 +807,98 @@
       </div>` : '';
 
     const priceStatus = state.priceStatus || {};
+    const priceQueue = state.priceQueue || {};
     const pct = priceStatus.loading && priceStatus.progress
       ? Math.round(priceStatus.progress.done / priceStatus.progress.total * 100)
       : 0;
     const priceBlock = isAdmin() ? `
       <div class="block">
-        <h2>Цены с торговой площадки Steam</h2>
-        <div class="block-body" style="display:grid;gap:10px">
+        <h2>Цены с торговой площадки Steam — управление очередью</h2>
+        <div class="block-body" style="display:grid;gap:12px">
           <div class="row" style="gap:18px;flex-wrap:wrap">
             <div><b style="color:#56A8FF">${num(priceStatus.withPrice || 0)}</b><span class="muted" style="margin-left:6px">с ценой из ${num(priceStatus.catalogItems || 0)}</span></div>
             <div><b>${num(priceStatus.cachedPrices || 0)}</b><span class="muted" style="margin-left:6px">в кэше БД</span></div>
+            <div><b>${num(priceQueue.size || 0)}</b><span class="muted" style="margin-left:6px">в кеше очереди</span></div>
+            <div><b>${num(priceQueue.queueLen || 0)}</b><span class="muted" style="margin-left:6px">в очереди</span></div>
+            <div><b>${num(priceQueue.proxies || 0)}</b><span class="muted" style="margin-left:6px">прокси</span></div>
+            <div><span class="tag ${priceQueue.paused ? 'banned' : 'on'}">${priceQueue.paused ? 'пауза' : 'активна'}</span></div>
           </div>
           ${priceStatus.loading ? `
             <div style="background:#10141a;border-radius:6px;height:10px;overflow:hidden;border:1px solid var(--line)">
               <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--accent),var(--accent-light));transition:width .3s"></div>
             </div>
-            <div class="muted" style="font-size:12px">Загрузка: ${priceStatus.progress?.done || 0} / ${priceStatus.progress?.total || 0} (${pct}%) — цены подтягиваются с интервалом ~0.15 сек, обновите страницу через пару минут</div>
+            <div class="muted" style="font-size:12px">Загрузка: ${priceStatus.progress?.done || 0} / ${priceStatus.progress?.total || 0} (${pct}%)</div>
           ` : ''}
-          <div class="row">
-            <button class="act primary" id="sys-prices-full" ${priceStatus.loading ? 'disabled' : ''}>Обновить ВСЕ цены с Steam</button>
-            <button class="act" id="sys-prices-refresh" ${priceStatus.loading ? 'disabled' : ''}>Подтянуть 50 новых</button>
+          <div class="row" style="flex-wrap:wrap">
+            <button class="act primary" id="sys-prices-full" ${priceStatus.loading ? 'disabled' : ''}>Обновить ВСЕ</button>
+            <button class="act" id="sys-prices-refresh" ${priceStatus.loading ? 'disabled' : ''}>+50</button>
             <button class="act" id="sys-catalog-rebuild">Пересобрать каталог</button>
+            <button class="act ${priceQueue.paused ? 'ok' : 'warn'}" id="sys-queue-toggle">${priceQueue.paused ? '▶ Возобновить' : '⏸ Пауза'}</button>
+            <button class="act danger" id="sys-queue-clear">Очистить кеш</button>
+          </div>
+          <div style="background:#0f141f;border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>Прокси для Steam API</b><span class="muted" style="font-size:12px">Чем больше IP, тем быстрее — каждый IP имеет свой лимит. Используй бесплатные из открытого доступа.</span></div>
+            <div class="table-scroll" style="max-height:160px"><table><thead><tr><th>Прокси</th><th>Успехов</th><th>Фейлов</th><th>Статус</th></tr></thead><tbody>${(priceQueue.proxyStats||[]).slice(0,20).map(p=>`<tr><td class="mono" style="font-size:12px">${esc(p.url)}</td><td class="num" style="color:#44c987">${p.success||0}</td><td class="num" style="color:#eb4b4b">${p.fails||0}</td><td><span class="tag ${p.blocked?'banned':'on'}">${p.blocked?'блок':'ок'}</span></td></tr>`).join('') || '<tr><td colspan=4 class="empty-row">Прокси нет — добавь вручную или нажми "Скачать бесплатные"</td></tr>'}</tbody></table></div>
+            <div class="row" style="flex-wrap:wrap">
+              <input id="proxy-add-input" placeholder="ip:port или http://ip:port" style="min-width:220px">
+              <button class="act small" id="proxy-add-btn">Добавить прокси</button>
+              <button class="act small" id="proxy-reload-btn">Перезагрузить из файла</button>
+              <button class="act small primary" id="proxy-fetch-free">Скачать бесплатные (open access)</button>
+            </div>
           </div>
         </div>
       </div>` : '';
 
+    const online = state.online || [];
+    const onlineBlock = `
+      <div class="block">
+        <h2>Онлайн — ${online.length} соединений</h2>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Игрок</th><th>IP / Страна</th><th>Действие</th><th>Подключен</th><th>Последнее действие</th></tr></thead>
+          <tbody>${online.length ? online.map(c => `
+            <tr>
+              <td>${c.user ? `${esc(c.user.name)}<small class="muted" style="display:block">${esc(c.user.steamid||'ID '+c.user.id)}</small>` : '<span class="muted">гость</span>'}</td>
+              <td><span class="mono">${esc(c.ip)}</span> <small class="muted">${esc(c.country||'')}</small><br><small class="muted" style="max-width:200px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.ua||'')}</small></td>
+              <td><span class="tag on">${esc(c.action||'online')}</span><br><small class="muted">${esc(c.lastPath||'')}</small></td>
+              <td class="muted">${when(c.connectedAt)}<br><small>${c.durationSec}с</small></td>
+              <td class="muted">${when(c.lastAction)}</td>
+            </tr>`).join('') : '<tr><td colspan=5 class="empty-row">Никого онлайн</td></tr>'}</tbody>
+        </table></div>
+        <div class="block-body row"><button class="act small" id="online-refresh">Обновить онлайн</button></div>
+      </div>`;
+
     const systemActions = isAdmin() ? `
       <div class="block">
-        <h2>Система</h2>
-        <div class="block-body row" style="gap:10px">
-          <button class="act" id="sys-cache-clear">Очистить кеш</button>
-          <button class="act danger" id="sys-maintenance-on">Техработы вкл</button>
-          <button class="act ok" id="sys-maintenance-off">Техработы выкл</button>
+        <h2>Система — бекап и очистка</h2>
+        <div class="block-body" style="display:grid;gap:10px">
+          <div class="row" style="flex-wrap:wrap">
+            <button class="act" id="sys-cache-clear">Очистить кеш (каталог/дропы/стата)</button>
+            <a class="act primary" href="/api/admin/backup/download" target="_blank" style="text-decoration:none">Скачать бекап БД (sqlite)</a>
+            <button class="act danger" id="sys-maintenance-on">Техработы вкл</button>
+            <button class="act ok" id="sys-maintenance-off">Техработы выкл</button>
+          </div>
+          <div class="row" style="flex-wrap:wrap;gap:8px">
+            <select id="cleanup-type"><option value="drops">Дропы старше N дней</option><option value="emails">Письма</option><option value="logs">Логи админов</option><option value="sessions">Сессии</option><option value="prices">Цены Steam</option><option value="all">Всё кроме цен</option></select>
+            <input id="cleanup-days" type="number" min="1" max="365" value="30" style="width:90px" placeholder="дней">
+            <button class="act small danger" id="cleanup-run">Очистить</button>
+          </div>
         </div>
       </div>` : '';
 
-    return `${infraBlock}${priceBlock}${systemActions}
+    const filters = state.logFilters || { admins: [], actions: [] };
+    const filterBlock = `
+      <div class="block">
+        <h2>Фильтры логов</h2>
+        <div class="block-body row" style="flex-wrap:wrap;gap:8px">
+          <select id="log-filter-admin"><option value="">Все админы</option>${(filters.admins||[]).map(a=>`<option value="${esc(a)}" ${state.logFilters.admin===a?'selected':''}>${esc(a)}</option>`).join('')}</select>
+          <select id="log-filter-action"><option value="">Все действия</option>${(filters.actions||[]).map(a=>`<option value="${esc(a)}" ${state.logFilters.action===a?'selected':''}>${esc(a)}</option>`).join('')}</select>
+          <input id="log-filter-q" placeholder="Поиск по цели/деталям" value="${esc(state.logFilters.q||'')}" style="min-width:200px">
+          <button class="act small" id="log-filter-apply">Применить</button>
+          <button class="act small" id="log-filter-clear">Сброс</button>
+        </div>
+      </div>`;
+
+    return `${infraBlock}${priceBlock}${onlineBlock}${systemActions}
       <div class="cards">
         <div class="card"><span>Аптайм</span><b>${hours}ч ${minutes}м</b></div>
         <div class="card"><span>Память (RSS)</span><b>${num(system.memoryMb)} МБ</b></div>
@@ -756,6 +909,7 @@
         <div class="card"><span>Предметов в каталоге</span><b>${num(system.catalogSize)}</b></div>
         <div class="card"><span>Запущен</span><b style="font-size:13px">${when(system.startedAt)}</b></div>
       </div>
+      ${filterBlock}
       <div class="block">
         <h2>Журнал действий персонала</h2>
         <div class="table-scroll"><table>
@@ -841,6 +995,136 @@
         await run(() => api(`/api/admin/drops/${button.dataset.deldrop}`, { method: 'DELETE' }), 'Дроп удалён', loadCases);
       });
     });
+
+    view.querySelectorAll('[data-editcase]').forEach(button => {
+      button.addEventListener('click', () => {
+        const id = button.dataset.editcase;
+        const c = state.cases.find(x=>x.id===id);
+        if (!c) return;
+        state.editingCase = { ...c, contents: (c.contents||[]).map(([cid,w])=>[cid,w]) };
+        state.caseBuilderSearch = '';
+        render();
+      });
+    });
+    view.querySelectorAll('[data-previewcase]').forEach(button => {
+      button.addEventListener('click', async () => {
+        try {
+          const data = await api(`/api/admin/cases/preview/${encodeURIComponent(button.dataset.previewcase)}`);
+          toast(`EV ${money(data.evCents)} | Профит ${money(data.profitCents)} | ROI ${data.roi}%`);
+        } catch (e) { toast(e.message,'err'); }
+      });
+    });
+    view.querySelectorAll('[data-delcase]').forEach(button => {
+      button.addEventListener('click', async () => {
+        if (!guardAdmin()) return;
+        const id = button.dataset.delcase;
+        if (!confirm(`Удалить кейс ${id}?`)) return;
+        await run(() => api(`/api/admin/cases/${encodeURIComponent(id)}?force=1`, { method: 'DELETE' }), 'Кейс удалён', loadCases);
+      });
+    });
+    const newBtn = view.querySelector('#case-create-new');
+    if (newBtn) newBtn.addEventListener('click', () => {
+      if (!guardAdmin()) return;
+      state.editingCase = { id: '', name: '', description: '', priceCents: 0, once: 0, enabled: 1, image: '', max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0, contents: [] };
+      state.caseBuilderSearch = '';
+      render();
+    });
+
+    const builder = view.querySelector('#case-builder');
+    if (builder) {
+      const close = () => { state.editingCase = null; render(); };
+      builder.querySelector('#case-builder-close')?.addEventListener('click', close);
+      builder.querySelector('#case-builder-cancel')?.addEventListener('click', close);
+      builder.addEventListener('click', e => { if (e.target.id==='case-builder') close(); });
+      const search = builder.querySelector('#cb-search');
+      if (search) search.addEventListener('input', () => { state.caseBuilderSearch = search.value; render(); });
+      builder.querySelectorAll('[data-cb-add]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const cid = btn.dataset.cbAdd;
+          const existing = state.editingCase.contents.find(([id])=>id===cid);
+          if (existing) existing[1] = Number(existing[1])+1;
+          else state.editingCase.contents.push([cid, 10]);
+          render();
+        });
+      });
+      builder.querySelectorAll('[data-cb-remove]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.cbRemove);
+          state.editingCase.contents.splice(idx,1);
+          render();
+        });
+      });
+      builder.querySelectorAll('[data-cb-weight]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const idx = Number(inp.dataset.cbWeight);
+          const v = Number(inp.value);
+          if (state.editingCase.contents[idx]) state.editingCase.contents[idx][1] = v;
+          render();
+        });
+      });
+      const save = builder.querySelector('#case-builder-save');
+      if (save) save.addEventListener('click', async () => {
+        if (!guardAdmin()) return;
+        const idEl = builder.querySelector('#cb-id');
+        const nameEl = builder.querySelector('#cb-name');
+        const descEl = builder.querySelector('#cb-desc');
+        const priceEl = builder.querySelector('#cb-price');
+        const discEl = builder.querySelector('#cb-discount');
+        const maxEl = builder.querySelector('#cb-max');
+        const levelEl = builder.querySelector('#cb-level');
+        const startEl = builder.querySelector('#cb-start');
+        const endEl = builder.querySelector('#cb-end');
+        const onceEl = builder.querySelector('#cb-once');
+        const enabledEl = builder.querySelector('#cb-enabled');
+        const imageEl = builder.querySelector('#cb-image');
+        const isNew = !state.cases.some(x=>x.id===state.editingCase.id) || !idEl.disabled;
+        const payload = {
+          id: (idEl.value||'').trim(),
+          name: (nameEl.value||'').trim(),
+          description: (descEl.value||'').trim(),
+          priceCents: Math.round(Number(priceEl.value||0)*100),
+          discount_percent: Math.round(Number(discEl.value||0)),
+          max_openings: Math.round(Number(maxEl.value||0)),
+          level_min: Math.round(Number(levelEl.value||0)),
+          starts_at: startEl.value ? Number(startEl.value) : null,
+          ends_at: endEl.value ? Number(endEl.value) : null,
+          once: onceEl.checked ? 1 : 0,
+          enabled: enabledEl.checked ? 1 : 0,
+          image: (imageEl.value||'').trim(),
+          contents: state.editingCase.contents
+        };
+        try {
+          if (isNew) {
+            await api('/api/admin/cases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            toast('Кейс создан');
+          } else {
+            await api(`/api/admin/cases/${encodeURIComponent(payload.id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            toast('Кейс сохранён');
+          }
+          state.editingCase = null;
+          await loadCases();
+        } catch (e) { toast(e.message,'err'); }
+      });
+      const uploadBtn = builder.querySelector('#cb-upload');
+      if (uploadBtn) uploadBtn.addEventListener('click', async () => {
+        const fileInput = builder.querySelector('#cb-file');
+        const file = fileInput && fileInput.files && fileInput.files[0];
+        if (!file) return toast('Выбери PNG файл','err');
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const data = reader.result;
+            const res = await api('/api/admin/cases/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: file.name, data }) });
+            const imgInput = builder.querySelector('#cb-image');
+            if (imgInput) imgInput.value = res.url;
+            state.editingCase.image = res.url;
+            toast('Картинка загружена: '+res.url);
+            render();
+          } catch (e) { toast(e.message,'err'); }
+        };
+        reader.readAsDataURL(file);
+      });
+    }
 
     const coefSave = view.querySelector('#coef-save');
     if (coefSave) {
@@ -1058,6 +1342,71 @@
     if (maintOff) maintOff.addEventListener('click', () => run(() => api('/api/admin/maintenance', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false })
     }), 'Режим техработ выключен'));
+
+    const queueToggle = view.querySelector('#sys-queue-toggle');
+    if (queueToggle) queueToggle.addEventListener('click', async () => {
+      const isPaused = state.priceQueue && state.priceQueue.paused;
+      const url = isPaused ? '/api/admin/prices/queue/resume' : '/api/admin/prices/queue/pause';
+      await run(() => api(url, { method: 'POST' }), isPaused ? 'Очередь возобновлена' : 'Очередь на паузе', loadLogs);
+    });
+    const queueClear = view.querySelector('#sys-queue-clear');
+    if (queueClear) queueClear.addEventListener('click', async () => {
+      if (!confirm('Очистить кеш цен (файл и БД)? Цены придется грузить заново.')) return;
+      await run(() => api('/api/admin/prices/queue/clear', { method: 'POST' }), 'Кеш цен очищен', loadLogs);
+    });
+    const proxyAdd = view.querySelector('#proxy-add-btn');
+    if (proxyAdd) proxyAdd.addEventListener('click', async () => {
+      const url = (view.querySelector('#proxy-add-input')||{}).value || '';
+      if (!url) return toast('Введи ip:port','err');
+      await run(() => api('/api/admin/proxies/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }), 'Прокси добавлен', loadLogs);
+    });
+    const proxyReload = view.querySelector('#proxy-reload-btn');
+    if (proxyReload) proxyReload.addEventListener('click', async () => {
+      await run(() => api('/api/admin/proxies/reload', { method: 'POST' }).then(r=>{ toast(`Загружено прокси: ${r.count}`); return r; }), null, loadLogs);
+    });
+    const proxyFetch = view.querySelector('#proxy-fetch-free');
+    if (proxyFetch) proxyFetch.addEventListener('click', async () => {
+      if (!confirm('Скачать бесплатные прокси из открытого доступа? Это займет 10 сек.')) return;
+      try {
+        proxyFetch.textContent = 'Скачиваю...';
+        proxyFetch.disabled = true;
+        const r = await api('/api/admin/proxies/fetch-free', { method: 'POST' });
+        toast(`Скачано ${r.fetched}, загружено ${r.loaded} прокси`);
+        await loadLogs();
+      } catch (e) { toast(e.message,'err'); } finally { proxyFetch.textContent = 'Скачать бесплатные (open access)'; proxyFetch.disabled = false; }
+    });
+    const onlineRefresh = view.querySelector('#online-refresh');
+    if (onlineRefresh) onlineRefresh.addEventListener('click', loadLogs);
+    const cleanupRun = view.querySelector('#cleanup-run');
+    if (cleanupRun) cleanupRun.addEventListener('click', async () => {
+      const type = (view.querySelector('#cleanup-type')||{}).value || 'drops';
+      const days = Number((view.querySelector('#cleanup-days')||{}).value || 30);
+      if (!confirm(`Очистить ${type} старше ${days} дней?`)) return;
+      await run(() => api('/api/admin/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, days }) }).then(r=>{ toast(`Удалено записей: ${r.deleted}`); return r; }), null, loadLogs);
+    });
+    const logApply = view.querySelector('#log-filter-apply');
+    if (logApply) logApply.addEventListener('click', async () => {
+      const admin = (view.querySelector('#log-filter-admin')||{}).value || '';
+      const action = (view.querySelector('#log-filter-action')||{}).value || '';
+      const q = (view.querySelector('#log-filter-q')||{}).value || '';
+      state.logFilters.admin = admin;
+      state.logFilters.action = action;
+      state.logFilters.q = q;
+      try {
+        const params = new URLSearchParams();
+        if (admin) params.set('admin', admin);
+        if (action) params.set('action', action);
+        if (q) params.set('q', q);
+        const data = await api(`/api/admin/logs?${params.toString()}`);
+        state.logs = data.logs;
+        render();
+      } catch (e) { toast(e.message,'err'); }
+    });
+    const logClear = view.querySelector('#log-filter-clear');
+    if (logClear) logClear.addEventListener('click', async () => {
+      state.logFilters = { admin: '', action: '', q: '', from: '', to: '' };
+      await loadLogs();
+    });
   }
 
   function bindUserModal(view) {
@@ -1209,14 +1558,19 @@
   }
   async function loadLogs() {
     try {
-      const [data, ps] = await Promise.all([
+      const [data, ps, online, pq] = await Promise.all([
         api('/api/admin/logs'),
-        api('/api/admin/prices/status').catch(() => null)
+        api('/api/admin/prices/status').catch(() => null),
+        api('/api/admin/online').catch(() => ({ online: 0, clients: [] })),
+        api('/api/admin/prices/queue/status').catch(() => null)
       ]);
       state.logs = data.logs;
       state.system = data.system;
       state.infra = data.infra || null;
+      state.logFilters = data.filters || { admins: [], actions: [] };
       if (ps) state.priceStatus = ps;
+      if (online) state.online = online.clients || [];
+      if (pq) state.priceQueue = pq;
     } catch (e) {
       console.warn(e);
     }

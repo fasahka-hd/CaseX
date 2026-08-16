@@ -9,7 +9,8 @@ const S = {
   targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
   footerLang: 'RU', footerLangOpen: false,
   globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
-  chat: false, chatEmail: '', chatEmailReady: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/'
+  chat: false, chatEmail: '', chatEmailReady: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/',
+  notifications: [], unreadNotifications: 0
 };
 
 const CURRENCIES = [
@@ -167,20 +168,29 @@ function listen() {
   events.addEventListener('notify', event => {
     try {
       const n = JSON.parse(event.data);
-      toast(n.title ? `${n.title}: ${n.body}` : n.body);
+      if (n.audience === 'guests' && S.me?.authenticated) return;
+      if (n.audience === 'authenticated' && !S.me?.authenticated) return;
+      if (!S.notifications.some(x => x.id === n.id)) {
+        S.notifications.unshift(n);
+        S.notifications = S.notifications.slice(0, 20);
+        S.unreadNotifications = (S.unreadNotifications || 0) + 1;
+        render();
+      }
     } catch (_) {}
   });
   fetch('/api/notifications').then(r => r.json()).then(data => {
     const list = (data && data.notifications) || [];
+    const filtered = list.filter(n => {
+      if (n.audience === 'guests' && S.me?.authenticated) return false;
+      if (n.audience === 'authenticated' && !S.me?.authenticated) return false;
+      return true;
+    });
+    S.notifications = filtered.slice(0, 20);
     const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
-    for (const n of list) {
-      if (n.audience === 'guests' && S.me?.authenticated) continue;
-      if (n.audience === 'authenticated' && !S.me?.authenticated) continue;
-      if (seen.has(n.id)) continue;
-      seen.add(n.id);
-      toast(n.title ? `${n.title}: ${n.body}` : n.body);
-    }
-    localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-50)));
+    let unread = 0;
+    for (const n of filtered) if (!seen.has(n.id)) unread++;
+    S.unreadNotifications = unread;
+    render();
   }).catch(() => {});
   document.addEventListener('click', event => {
     if (!document.body.contains(event.target)) return;
@@ -229,7 +239,7 @@ function header() {
       ${S.me?.authenticated && (S.me.user.role === 'admin' || S.me.user.role === 'support')
         ? `<a class="admin-link ${S.me.user.role === 'support' ? 'is-support' : ''}" href="/admin" title="${S.me.user.role === 'support' ? 'Панель поддержки' : 'Админ-панель'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7.5 3v5.4c0 4.4-3 8.3-7.5 9.6-4.5-1.3-7.5-5.2-7.5-9.6V6L12 3Z"/><path d="M9.2 12.2l2 2 3.6-3.9"/></svg><span>ПАНЕЛЬ</span></a>` : ''}
       ${S.me?.authenticated
-        ? `<button id="notification-trigger" class="notification-trigger" type="button" onclick="openNotifications()" aria-label="Уведомления"><img src="/chunks/notificationIcon.svg" alt=""></button>
+        ? `<button id="notification-trigger" class="notification-trigger" type="button" onclick="openNotifications()" aria-label="Уведомления" style="position:relative"><img src="/chunks/notificationIcon.svg" alt="">${S.unreadNotifications ? `<span style="position:absolute;top:-4px;right:-4px;background:#eb4b4b;color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:grid;place-items:center;padding:0 3px">${S.unreadNotifications > 9 ? '9+' : S.unreadNotifications}</span>` : ''}</button>
            <button id="profile-trigger" class="profile-trigger" type="button" onclick="go('profile')" aria-label="${esc(S.me.user.name || 'Личный профиль')}">${avatarImage(S.me.user)}</button>`
         : `<button class="steam auth-login-button" onclick="login()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>`}
     </div>
@@ -1474,12 +1484,19 @@ Object.assign(window, {
 if (typeof window.openNotifications !== 'function') {
   window.openNotifications = async () => {
     try {
-      const data = await api('/api/notifications');
-      const list = (data.notifications || []);
-      if (!list.length) { toast('Уведомлений нет'); return; }
-      const body = list.slice(0, 10).map(n => `<div style="padding:8px 0;border-bottom:1px solid rgba(86,168,255,.12)"><b style="color:#56A8FF">${esc(n.title)}</b><div style="color:#dce5f1;margin-top:4px">${esc(n.body)}</div></div>`).join('');
-      const html = `<div class="notifications-modal" style="position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:rgba(0,0,0,.65);backdrop-filter:blur(3px)" onclick="if(event.target===this)this.remove()"><div style="background:linear-gradient(180deg,#1b2436,#12151f);border:1px solid rgba(86,168,255,.25);border-radius:10px;padding:20px;max-width:480px;width:90%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)"><h3 style="margin:0 0 12px;color:#fff">Уведомления</h3>${body}<button class="upgrade" style="margin-top:14px;width:100%" onclick="this.closest('.notifications-modal').remove()">Закрыть</button></div></div>`;
+      if (!S.notifications.length) {
+        const data = await api('/api/notifications');
+        S.notifications = (data.notifications || []).slice(0,20);
+      }
+      if (!S.notifications.length) { toast('Уведомлений нет'); return; }
+      const body = S.notifications.slice(0, 15).map(n => `<div style="padding:10px 0;border-bottom:1px solid rgba(86,168,255,.12)"><b style="color:#56A8FF">${esc(n.title)}</b><div style="color:#dce5f1;margin-top:4px;white-space:pre-wrap">${esc(n.body)}</div><small style="color:#8d97a4">${new Date(n.createdAt).toLocaleString('ru-RU')}</small></div>`).join('');
+      const html = `<div class="notifications-modal" style="position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:rgba(0,0,0,.65);backdrop-filter:blur(3px)" onclick="if(event.target===this)this.remove()"><div style="background:linear-gradient(180deg,#1b2436,#12151f);border:1px solid rgba(86,168,255,.25);border-radius:10px;padding:20px;max-width:520px;width:92%;max-height:82vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)"><h3 style="margin:0 0 12px;color:#fff">Уведомления <span style="font-weight:400;color:#8d97a4;font-size:13px">(${S.notifications.length})</span></h3>${body}<button class="upgrade" style="margin-top:14px;width:100%" onclick="this.closest('.notifications-modal').remove()">Закрыть</button></div></div>`;
       document.body.insertAdjacentHTML('beforeend', html);
+      const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
+      S.notifications.forEach(n => seen.add(n.id));
+      localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-100)));
+      S.unreadNotifications = 0;
+      render();
     } catch (e) { toast(e.message, 'error'); }
   };
 }

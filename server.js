@@ -7,7 +7,7 @@ const fs = require('fs');
 
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
+  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'BASE_URL', 'ALLOW_DEV_LOGIN', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'DB_PATH', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
   for (const line of localEnv.split(/\r?\n/)) {
     const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
     if (!match || !allowed.has(match[1]) || process.env[match[1]]) continue;
@@ -31,6 +31,8 @@ const BRAND_NAME = process.env.BRAND_NAME || 'КЕЙСЕР';
 const TELEGRAM_URL = process.env.TELEGRAM_URL || 'https://t.me/';
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
+try { fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true }); } catch {}
+
 
 const RARITIES = {
   consumer:   { name: 'Ширпотреб',       color: '#b0c3d9', rank: 0 },
@@ -84,7 +86,7 @@ catalogItem('ak47-redline', 'AK-47 | Redline', 'ak47-redline', 105000, 'restrict
   catalogItem('ak47-bloodsport', 'AK-47 | Bloodsport', 'ak47-bloodsport', 890000, 'covert', 'FN'),
   catalogItem('ak47-vulcan', 'AK-47 | Vulcan', 'ak47-vulcan', 1150000, 'covert', 'FN'),
   catalogItem('ak47-wasteland-rebel', 'AK-47 | Wasteland Rebel', 'ak47-wasteland-rebel', 72000, 'restricted', 'FT'),
-  catalogItem('m4a4-dragon-king', 'M4A4 | Dragon King', 'm4a4-dragon-king', 76000, 'restricted', 'MW'),
+  catalogItem('m4a4-dragon-king', 'M4A4 | 龍王 (Dragon King)', 'm4a4-dragon-king', 76000, 'restricted', 'MW'),
   catalogItem('m4a4-royal-paladin', 'M4A4 | Royal Paladin', 'm4a4-royal-paladin', 168000, 'classified', 'FN'),
   catalogItem('m4a4-the-emperor', 'M4A4 | The Emperor', 'm4a4-the-emperor', 740000, 'covert', 'MW'),
   catalogItem('m4a4-desolate-space', 'M4A4 | Desolate Space', 'm4a4-desolate-space', 155000, 'classified', 'FT'),
@@ -195,7 +197,7 @@ catalogItem('ak47-redline', 'AK-47 | Redline', 'ak47-redline', 105000, 'restrict
   catalogItem('negev-power-loader', 'Negev | Power Loader', 'negev-power-loader', 23000, 'milspec', 'FN'),
   catalogItem('scar-bloodsport', 'SCAR-20 | Bloodsport', 'scar-bloodsport', 128000, 'classified', 'FN'),
   catalogItem('scar-cardiac', 'SCAR-20 | Cardiac', 'scar-cardiac', 66000, 'restricted', 'MW'),
-  catalogItem('scar-green-plaid', 'SCAR-20 | Green Plaid', 'scar-green-plaid', 25000, 'milspec', 'FN'),
+  catalogItem('scar-emerald', 'SCAR-20 | Emerald', 'scar-emerald', 25000, 'milspec', 'FN'),
   catalogItem('g3-executioner', 'G3SG1 | The Executioner', 'g3-executioner', 126000, 'classified', 'MW'),
   catalogItem('g3-murky', 'G3SG1 | Murky', 'g3-murky', 64000, 'restricted', 'WW'),
   catalogItem('g3-flux', 'G3SG1 | Flux', 'g3-flux', 8500, 'industrial', 'FT'),
@@ -205,7 +207,7 @@ catalogItem('ak47-redline', 'AK-47 | Redline', 'ak47-redline', 105000, 'restrict
   catalogItem('butterfly-slaughter', '★ Butterfly Knife | Slaughter', 'butterfly-slaughter', 5600000, 'contraband', 'MW'),
   catalogItem('flip-doppler', '★ Flip Knife | Doppler', 'flip-doppler', 2600000, 'contraband', 'FN'),
   catalogItem('gut-tiger-tooth', '★ Gut Knife | Tiger Tooth', 'gut-tiger-tooth', 1500000, 'contraband', 'FN'),
-  catalogItem('falchion-case-hardened', '★ Falchion | Case Hardened', 'falchion-case-hardened', 1200000, 'contraband', 'WW'),
+  catalogItem('falchion-case-hardened', '★ Falchion Knife | Case Hardened', 'falchion-case-hardened', 1200000, 'contraband', 'WW'),
   catalogItem('karambit-crimson-web', '★ Karambit | Crimson Web', 'karambit-crimson-web', 1900000, 'covert', 'FT'),
 ];
 let CATALOG_BY_ID = new Map(STATIC_CATALOG.map(item => [item.catalogId, item]));
@@ -288,11 +290,8 @@ function withSteamIcon(item) {
 }
 
 function slugId(name) {
-  const slug = String(name || '').toLowerCase()
-    .replace(/★/g, ' ')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug || 'item';
+  const slug = String(name || '').toLowerCase().replace(/★/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'item-' + Math.random().toString(36).slice(2,8);
 }
 
 let PRICE_LOADING = false;
@@ -311,6 +310,38 @@ const WEAR_SHORT = {
   'Well-Worn': 'WW',
   'Battle-Scarred': 'BS'
 };
+
+const ESTIMATED_BY_RARITY = {
+  consumer: 3500,
+  industrial: 12000,
+  milspec: 30000,
+  restricted: 90000,
+  classified: 250000,
+  covert: 750000,
+  contraband: 5000000
+};
+function estimatePriceByRarity(rarityKey) {
+  const base = ESTIMATED_BY_RARITY[rarityKey] || 30000;
+  const jitter = 0.7 + Math.random() * 0.6;
+  return Math.max(100, Math.round(base * jitter));
+}
+function getMarketNamesForItem(item) {
+  const baseName = String(item.name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  if (!baseName) return [];
+  const exactWear = item.wear ? String(item.wear).toUpperCase() : '';
+  const wearsOrder = exactWear ? [exactWear, 'FT','MW','FN','WW','BS'].filter((v,i,a)=>a.indexOf(v)===i) : ['FT','MW','FN','WW','BS'];
+  return wearsOrder.map(w => {
+    const suffix = WEAR_FULL[w] ? ' (' + WEAR_FULL[w] + ')' : '';
+    return baseName + suffix;
+  });
+}
+function uniqueSlug(base, used) {
+  if (!used.has(base)) return base;
+  let i = 2;
+  while (used.has(base + '-' + i)) i++;
+  return base + '-' + i;
+}
+
 function wearSuffix(wear) {
   if (!wear) return '';
   if (WEAR_FULL[wear]) return ` (${WEAR_FULL[wear]})`;
@@ -323,7 +354,12 @@ function steamMarketName(name, wear) {
 }
 function parseRubles(s) {
   if (!s) return 0;
-  const cleaned = String(s).replace(/[^\d,]/g, '').replace(',', '.');
+  let cleaned = String(s).replace(/\u00a0/g, ' ').trim();
+  if (/,\d{1,2}\s*(pуб|руб|RUB)?/i.test(cleaned) && cleaned.includes(',')) {
+    cleaned = cleaned.replace(/[^\d,]/g, '').replace(',', '.');
+  } else {
+    cleaned = cleaned.replace(/[^\d.]/g, '');
+  }
   const n = Number.parseFloat(cleaned);
   return Number.isFinite(n) ? Math.max(0, Math.round(n * 100)) : 0;
 }
@@ -338,10 +374,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function fetchSteamPriceRaw(marketHashName) {
   const url = `https://steamcommunity.com/market/priceoverview/?appid=730&currency=5&market_hash_name=${encodeURIComponent(marketHashName)}`;
   try {
-    const res = await fetch(url, { headers: STEAM_HEADERS, signal: AbortSignal.timeout(10000) });
-    if (res.status === 429) {
-      return { __rateLimited: true };
-    }
+    const res = await fetch(url, { headers: STEAM_HEADERS, signal: AbortSignal.timeout(15000) });
+    if (res.status === 429) return { __rateLimited: true };
     if (!res.ok) return null;
     return await res.json();
   } catch (e) {
@@ -354,8 +388,7 @@ async function waitForRateLimit() {
   const now = Date.now();
   if (now < rateLimitedUntil) await sleep(rateLimitedUntil - now);
 }
-
-async function fetchSteamPrice(marketHashName) {
+async function fetchSteamPriceSingle(marketHashName) {
   if (!marketHashName) return 0;
   await waitForRateLimit();
   try {
@@ -370,35 +403,77 @@ async function fetchSteamPrice(marketHashName) {
       const volume = parseInt(String(data.volume || '0').replace(/[^\d]/g, ''), 10) || 0;
       const price = lowest || median;
       if (price > 0) {
-        db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+        try {
+          db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
           VALUES (?, ?, ?, ?, 'RUB', 'steam', ?)
           ON CONFLICT(market_hash_name) DO UPDATE SET lowest_price=excluded.lowest_price,
             median_price=excluded.median_price, volume=excluded.volume, updated_at=excluded.updated_at`)
           .run(marketHashName, lowest, median, volume, Date.now());
+        } catch {}
         return price;
       }
-      db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+      try {
+        db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
         VALUES (?, 0, 0, 0, 'RUB', 'steam', ?)
         ON CONFLICT(market_hash_name) DO UPDATE SET updated_at=excluded.updated_at`).run(marketHashName, Date.now());
+      } catch {}
+      return 0;
     }
-  } catch (e) {
-
+    if (data && data.success === false) {
+      try {
+        db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+        VALUES (?, 0, 0, 0, 'RUB', 'steam', ?)
+        ON CONFLICT(market_hash_name) DO UPDATE SET updated_at=excluded.updated_at`).run(marketHashName, Date.now());
+      } catch {}
+    }
+  } catch (e) {}
+  return 0;
+}
+async function fetchPriceForItem(item) {
+  const names = getMarketNamesForItem(item);
+  for (const mn of names) {
+    const price = await fetchSteamPriceSingle(mn);
+    if (price > 0) return price;
   }
   return 0;
 }
-
-function cachedSteamPrice(marketHashName, maxAgeMs = 7 * 24 * 3600 * 1000) {
-  const row = db.prepare('SELECT lowest_price, median_price, updated_at FROM steam_prices WHERE market_hash_name = ?').get(marketHashName);
-  if (!row) return { hit: false, price: 0 };
-  if (maxAgeMs > 0 && Date.now() - Number(row.updated_at) > maxAgeMs) return { hit: false, price: 0, stale: true };
-  return { hit: true, price: Number(row.lowest_price) || Number(row.median_price) || 0, zero: !row.lowest_price && !row.median_price };
+async function fetchSteamPrice(marketHashName) {
+  if (!marketHashName) return 0;
+  return await fetchSteamPriceSingle(marketHashName);
 }
+function cachedSteamPrice(marketHashName, maxAgeMs = 7 * 24 * 3600 * 1000) {
+  try {
+    const row = db.prepare('SELECT lowest_price, median_price, updated_at FROM steam_prices WHERE market_hash_name = ?').get(marketHashName);
+    if (!row) return { hit: false, price: 0 };
+    if (maxAgeMs > 0 && Date.now() - Number(row.updated_at) > maxAgeMs) {
+      const price = Number(row.lowest_price) || Number(row.median_price) || 0;
+      return { hit: false, price, stale: true, zero: !price };
+    }
+    return { hit: true, price: Number(row.lowest_price) || Number(row.median_price) || 0, zero: !row.lowest_price && !row.median_price };
+  } catch {
+    return { hit: false, price: 0 };
+  }
+}
+function cachedPriceForItem(item) {
+  const names = getMarketNamesForItem(item);
+  for (const mn of names) {
+    const c = cachedSteamPrice(mn);
+    if (c.hit && c.price) return c;
+  }
+  for (const mn of names) {
+    const c = cachedSteamPrice(mn, 0);
+    if (c.price) return { hit: true, price: c.price, stale: true };
+  }
+  return { hit: false, price: 0 };
+}
+
 
 async function runPool(tasks, concurrency, onResult) {
   const results = new Array(tasks.length);
   let idx = 0;
   let done = 0;
   let ok = 0;
+  const actualConcurrency = Math.max(1, Math.min(concurrency, tasks.length));
   async function worker() {
     while (true) {
       const i = idx++;
@@ -408,23 +483,28 @@ async function runPool(tasks, concurrency, onResult) {
         if (results[i]) ok++;
         if (onResult) onResult({ i, value: results[i], done: ++done, ok });
       } catch (e) {
+        results[i] = 0;
         if (onResult) onResult({ i, value: 0, done: ++done, ok });
       }
+      await sleep(50);
     }
   }
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  await Promise.all(Array.from({ length: actualConcurrency }, worker));
   return { results, ok };
 }
 
+
 function lookupPriceSync(name, wear) {
-  return cachedSteamPrice(steamMarketName(name, wear)).price;
+  const fake = { name, wear };
+  return cachedPriceForItem(fake).price || cachedSteamPrice(steamMarketName(name, wear)).price;
 }
 
-function dynamicCatalogItem(skin, priceCents) {
+function dynamicCatalogItem(skin, priceCents, forcedId) {
   const [weapon, skinName = ''] = String(skin.name || '').split('|');
   const rarityKey = RARITY_KEY_BY_NAME[skin.rarity && skin.rarity.name] || 'milspec';
   const R = RARITIES[rarityKey] || RARITIES.milspec;
-  const id = slugId(skin.name);
+  const id = forcedId || slugId(skin.name);
+  const finalPrice = priceCents > 0 ? priceCents : estimatePriceByRarity(rarityKey);
   return {
     catalogId: id,
     id,
@@ -435,11 +515,12 @@ function dynamicCatalogItem(skin, priceCents) {
     wear: '',
     icon: skin.image || '',
     localIcon: '',
-    priceCents: priceCents || 0,
+    priceCents: finalPrice,
     rarity: R.name,
     rarityKey,
     rarityColor: R.color,
-    rarityRank: R.rank
+    rarityRank: R.rank,
+    _isEstimated: !priceCents
   };
 }
 
@@ -448,29 +529,35 @@ async function buildFullCatalog() {
   const staticNames = new Set(STATIC_CATALOG.map(item => item.name));
   const usedIds = new Set(CATALOG_BY_ID.keys());
   const dynamic = [];
-
   for (const item of STATIC_CATALOG) {
-    const cached = cachedSteamPrice(steamMarketName(item.name, item.wear));
-    if (cached.hit && cached.price) item.priceCents = cached.price;
+    const cp = cachedPriceForItem(item);
+    if (cp.hit && cp.price) {
+      item.priceCents = cp.price;
+      item._isEstimated = false;
+    } else {
+      if (!item.priceCents) item.priceCents = estimatePriceByRarity(item.rarityKey);
+    }
   }
   for (const skin of skins) {
     if (!skin || !skin.name) continue;
     if (staticNames.has(skin.name)) continue;
-    let id = slugId(skin.name);
-    if (usedIds.has(id)) id = `${id}-2`;
+    const baseId = slugId(skin.name);
+    const id = uniqueSlug(baseId, usedIds);
     usedIds.add(id);
-    const cp = cachedSteamPrice(steamMarketName(skin.name));
-    const priceCents = cp.hit ? cp.price : 0;
-    dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, priceCents));
+    const fakeItem = { name: skin.name, wear: '' };
+    const cp = cachedPriceForItem(fakeItem);
+    const priceCents = cp.hit && cp.price ? cp.price : 0;
+    dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, priceCents, id));
   }
   CATALOG = [...STATIC_CATALOG, ...dynamic];
   CATALOG_BY_ID = new Map(CATALOG.map(item => [item.catalogId, item]));
-  cache.del('catalog:public');
-
+  try { cache.del('catalog:public'); } catch {}
   const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
-  console.log(`[catalog] Предметов: ${CATALOG.length} (статичных ${STATIC_CATALOG.length}, динамических ${dynamic.length}); с ценой: ${withPrice}`);
-
-  refreshAllSteamPrices().catch(e => console.warn('[prices]', e.message));
+  const estimated = CATALOG.filter(i => i._isEstimated).length;
+  console.log(`[catalog] Предметов: ${CATALOG.length} (статичных ${STATIC_CATALOG.length}, динамических ${dynamic.length}); с ценой: ${withPrice} (оценочных ${estimated})`);
+  setTimeout(() => {
+    refreshAllSteamPrices().catch(e => console.warn('[prices]', e.message));
+  }, 3000);
   return CATALOG;
 }
 
@@ -478,25 +565,38 @@ async function refreshAllSteamPrices() {
   if (PRICE_LOADING) return PRICE_PROGRESS;
   PRICE_LOADING = true;
   try {
-    const items = CATALOG.slice();
-    const tasks = items.map(item => () => fetchSteamPrice(steamMarketName(item.name, item.wear)));
-    PRICE_PROGRESS = { total: tasks.length, done: 0, ok: 0 };
+    const items = CATALOG.slice().sort((a,b) => {
+      const aEst = a._isEstimated ? 1 : 0;
+      const bEst = b._isEstimated ? 1 : 0;
+      if (aEst !== bEst) return bEst - aEst;
+      return 0;
+    });
+    const tasks = items.map(item => async () => {
+      const price = await fetchPriceForItem(item);
+      if (price) {
+        item.priceCents = price;
+        item._isEstimated = false;
+      }
+      return price;
+    });
+    PRICE_PROGRESS = { total: tasks.length, done: 0, ok: CATALOG.filter(i=>!i._isEstimated).length };
     const start = Date.now();
     let lastLog = 0;
-    const { ok } = await runPool(tasks, 4, ({ value, done, ok: okCount }) => {
-      if (value) {
-        const idx = done - 1;
-        if (items[idx]) items[idx].priceCents = value;
-      }
+    const proxyCount = (global.__priceQueue && global.__priceQueue.stats ? global.__priceQueue.stats().proxies : 0) || 0;
+    const concurrency = Math.min(12, Math.max(4, proxyCount + 1));
+    console.log(`[prices] Старт: ${tasks.length} предметов, concurrency=${concurrency}, proxies=${proxyCount}`);
+    const { ok } = await runPool(tasks, concurrency, ({ value, done, ok: okCount }) => {
       PRICE_PROGRESS.done = done;
       PRICE_PROGRESS.ok = okCount;
-      if (Date.now() - lastLog > 10000) {
+      if (Date.now() - lastLog > 5000) {
         lastLog = Date.now();
         const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-        console.log(`[prices] ${done}/${tasks.length} (за ${elapsed}с, цен ${okCount})`);
+        const pct = ((done / tasks.length) * 100).toFixed(1);
+        const eta = done ? ((tasks.length - done) * (Date.now() - start) / done / 1000).toFixed(0) : '?';
+        console.log(`[prices] ${done}/${tasks.length} (${pct}%) за ${elapsed}с, реальных цен ${okCount}, ETA ~${eta}с, conc=${concurrency}`);
       }
     });
-    cache.del('catalog:public');
+    try { cache.del('catalog:public'); } catch {}
     console.log(`[prices] Готово: ${ok}/${tasks.length} реальных цен за ${((Date.now() - start) / 1000).toFixed(0)}с`);
     return { total: tasks.length, updated: ok };
   } finally {
@@ -507,25 +607,38 @@ async function refreshAllSteamPrices() {
 async function refreshSteamPrices(limit = 0) {
   if (PRICE_LOADING) return { alreadyRunning: true, ...PRICE_PROGRESS };
   let items = CATALOG.filter(i => {
-    const key = steamMarketName(i.name, i.wear);
-    const c = cachedSteamPrice(key, 24 * 3600 * 1000);
-    return !c.hit || (c.stale && !c.zero);
+    if (i._isEstimated) return true;
+    const names = getMarketNamesForItem(i);
+    for (const mn of names) {
+      const c = cachedSteamPrice(mn, 24 * 3600 * 1000);
+      if (!c.hit) return true;
+      if (c.stale) return true;
+    }
+    return false;
   });
   if (limit > 0) items = items.slice(0, limit);
-  const tasks = items.map(item => () => fetchSteamPrice(steamMarketName(item.name, item.wear)));
-  let ok = 0;
-  await runPool(tasks, 4, ({ value, i }) => {
-    if (value && items[i]) items[i].priceCents = value;
-    if (value) ok++;
+  const tasks = items.map(item => async () => {
+    const price = await fetchPriceForItem(item);
+    if (price) {
+      item.priceCents = price;
+      item._isEstimated = false;
+    }
+    return price;
   });
-  cache.del('catalog:public');
+  let ok = 0;
+  const proxyCount = (global.__priceQueue && global.__priceQueue.stats ? global.__priceQueue.stats().proxies : 0) || 0;
+  const concurrency = Math.min(8, Math.max(2, proxyCount + 1));
+  await runPool(tasks, concurrency, ({ value }) => { if (value) ok++; });
+  try { cache.del('catalog:public'); } catch {}
   return { checked: items.length, updated: ok };
 }
 
-const CASES = [
+const DEFAULT_CASES = [
   {
     id: 'starter', name: 'СТАРТОВЫЙ КЕЙС', priceCents: 0, once: true,
     description: 'Один бесплатный кейс для нового игрока',
+    image: '',
+    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
     contents: [
       ['p250-sand-dune', 46], ['awp-safari-mesh', 28], ['mp7-cirrus', 16],
       ['ak47-elite-build', 7], ['awp-worm-god', 2.5], ['usp-cortex', 0.5]
@@ -534,6 +647,8 @@ const CASES = [
   {
     id: 'neon', name: 'NEON CASE', priceCents: 24900,
     description: 'Яркие скины разных редкостей',
+    image: '',
+    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
     contents: [
       ['mp7-cirrus', 36], ['ak47-elite-build', 27], ['awp-worm-god', 19],
       ['ak47-slate', 11], ['usp-cortex', 5], ['glock-vogue', 1.6], ['m4a1-hyper-beast', 0.4]
@@ -542,6 +657,8 @@ const CASES = [
   {
     id: 'classified', name: 'CLASSIFIED', priceCents: 99900,
     description: 'Повышенный шанс на розовую редкость',
+    image: '',
+    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
     contents: [
       ['awp-worm-god', 34], ['ak47-slate', 27], ['usp-cortex', 16],
       ['glock-vogue', 11], ['mac10-disco-tech', 8], ['m4a1-hyper-beast', 3], ['ak47-neon-rider', 1]
@@ -550,6 +667,8 @@ const CASES = [
   {
     id: 'legend', name: 'LEGEND', priceCents: 299900,
     description: 'Редкие красные и контрабандные предметы',
+    image: '',
+    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
     contents: [
       ['usp-cortex', 30], ['glock-vogue', 24], ['mac10-disco-tech', 18],
       ['m4a1-hyper-beast', 12], ['ak47-neon-rider', 8], ['awp-asiimov', 5],
@@ -557,7 +676,61 @@ const CASES = [
     ]
   }
 ];
-const CASES_BY_ID = new Map(CASES.map(item => [item.id, item]));
+
+function dbRowToCase(row) {
+  try {
+    const contents = JSON.parse(row.contents || '[]');
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description || '',
+      priceCents: Number(row.price_cents || 0),
+      once: !!row.once,
+      enabled: !!row.enabled,
+      image: row.image || '',
+      max_openings: Number(row.max_openings || 0),
+      level_min: Number(row.level_min || 0),
+      starts_at: row.starts_at ? Number(row.starts_at) : null,
+      ends_at: row.ends_at ? Number(row.ends_at) : null,
+      discount_percent: Number(row.discount_percent || 0),
+      contents: Array.isArray(contents) ? contents : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+function ensureCasesDir() {
+  try { fs.mkdirSync(path.join(__dirname, 'static', 'cases'), { recursive: true }); } catch {}
+}
+ensureCasesDir();
+
+let CASES = [];
+let CASES_BY_ID = new Map();
+function loadCasesFromDB() {
+  try {
+    const rows = db.prepare('SELECT * FROM custom_cases ORDER BY created_at ASC').all();
+    if (!rows.length) return [];
+    return rows.map(dbRowToCase).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+function refreshCasesCache() {
+  try {
+    const rows = loadCasesFromDB();
+    if (!rows.length) {
+      CASES = DEFAULT_CASES.slice();
+    } else {
+      CASES = rows;
+    }
+    CASES_BY_ID = new Map(CASES.map(item => [item.id, item]));
+  } catch (e) {
+    console.warn('[cases] failed to load from DB, using defaults', e.message);
+    CASES = DEFAULT_CASES.slice();
+    CASES_BY_ID = new Map(CASES.map(item => [item.id, item]));
+  }
+}
 
 const RATE_LIMIT = Number(process.env.RATE_LIMIT || 120);
 const RATE_WINDOW = Number(process.env.RATE_WINDOW || 60);
@@ -822,7 +995,43 @@ db.exec(`
     source TEXT NOT NULL DEFAULT 'steam',
     updated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS custom_cases(
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    price_cents INTEGER NOT NULL,
+    once INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    image TEXT NOT NULL DEFAULT '',
+    max_openings INTEGER NOT NULL DEFAULT 0,
+    level_min INTEGER NOT NULL DEFAULT 0,
+    starts_at INTEGER,
+    ends_at INTEGER,
+    discount_percent INTEGER NOT NULL DEFAULT 0,
+    contents TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_case_openings_case ON case_openings(case_id);
 `);
+
+(function seedCases() {
+  try {
+    const count = db.prepare('SELECT COUNT(*) AS c FROM custom_cases').get().c;
+    if (count === 0) {
+      console.log('[cases] Seeding default cases into DB');
+      const now = Date.now();
+      const ins = db.prepare('INSERT INTO custom_cases(id,name,description,price_cents,once,enabled,image,max_openings,level_min,starts_at,ends_at,discount_percent,contents,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (const c of DEFAULT_CASES) {
+        ins.run(c.id, c.name, c.description||'', c.priceCents, c.once?1:0, c.enabled?1:0, c.image||'', c.max_openings||0, c.level_min||0, c.starts_at||null, c.ends_at||null, c.discount_percent||0, JSON.stringify(c.contents||[]), now, now);
+      }
+    }
+    refreshCasesCache();
+  } catch (e) {
+    console.warn('[cases] seed failed', e.message);
+    refreshCasesCache();
+  }
+})();
 
 const mailer = require('./lib/mailer');
 
@@ -892,8 +1101,28 @@ function requireStaff(req, res, next) {
 }
 
 const clients = new Set();
+const onlineClients = new Map();
 function cleanSessions() { db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()); }
 setInterval(cleanSessions, 600000).unref();
+function updateOnlineActivity(req) {
+  try {
+    const account = currentUser(req);
+    if (!account) return;
+    for (const entry of onlineClients.values()) {
+      if (entry.user && entry.user.id === account.id) {
+        entry.lastPath = req.path;
+        entry.lastAction = Date.now();
+        entry.action = req.path.replace('/api/','').split('/')[0] || 'online';
+      }
+    }
+  } catch {}
+}
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/') && req.path !== '/api/events' && req.path !== '/api/online') {
+    updateOnlineActivity(req);
+  }
+  next();
+});
 
 function sign(value) {
   return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('hex');
@@ -916,11 +1145,24 @@ function cookies(header = '') {
 function currentUser(req) {
   const token = cookies(req.headers.cookie || '').session;
   if (!token) return null;
-  return db.prepare(`
+  try {
+    const parts = token.split('.');
+    if (parts.length < 3) return null;
+    const sig = parts.pop();
+    const raw = parts.join('.');
+    const expected = sign(raw);
+    const a = Buffer.from(sig, 'hex');
+    const b = Buffer.from(expected, 'hex');
+    if (a.length !== b.length) return null;
+    if (!crypto.timingSafeEqual(a, b)) return null;
+  } catch { return null; }
+  try {
+    return db.prepare(`
     SELECT u.* FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.id = ? AND s.expires_at > ?
   `).get(token, Date.now()) || null;
+  } catch { return null; }
 }
 function setCookie(res, token) {
   const parts = [
@@ -942,6 +1184,9 @@ function clearCookie(res, token) {
 }
 function broadcast(type, payload) {
   const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const entry of onlineClients.values()) {
+    try { entry.res.write(data); } catch {}
+  }
   for (const response of clients) {
     try { response.write(data); } catch { clients.delete(response); }
   }
@@ -964,22 +1209,74 @@ function steamLogin(req) {
   return `https://steamcommunity.com/openid/login?${params}`;
 }
 async function verifySteam(req) {
-
   const expectedReturnTo = `${requestBase(req)}/auth/steam/callback`;
   const providedReturnTo = String(
-    req.query['openid.return_to'] || req.query.openid_return_to || ''
+    req.query['openid.return_to'] || req.query.openid_return_to || req.query['openid.return_to'] || req.query.openid_return_to || ''
   );
-  if (providedReturnTo && providedReturnTo !== expectedReturnTo) {
-    throw new Error('OpenID return_to mismatch');
-  }
+  if (!providedReturnTo) throw new Error('OpenID return_to missing');
+  if (providedReturnTo !== expectedReturnTo) throw new Error('OpenID return_to mismatch');
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) params.set(key, String(value));
   params.set('openid.mode', 'check_authentication');
-  const response = await fetch('https://steamcommunity.com/openid/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString()
+
+  const makeHeaders = () => ({
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+    'Referer': 'https://steamcommunity.com/'
   });
-  const text = await response.text();
-  if (!response.ok || !/is_valid\s*:\s*true/i.test(text)) throw new Error('Steam OpenID verification failed');
+
+  async function doFetch(attemptProxy) {
+    let dispatcher = undefined;
+    if (attemptProxy) {
+      try {
+        const pq = global.__priceQueue;
+        if (pq && pq.stats) {
+          const st = pq.stats();
+          const list = (st.proxyStats || []).filter(p=>!p.blocked);
+          if (list.length) {
+            const pick = list[Math.floor(Math.random()*list.length)];
+            const { ProxyAgent } = require('undici');
+            dispatcher = new ProxyAgent(pick.url);
+          }
+        }
+      } catch {}
+    }
+    const opts = {
+      method: 'POST',
+      headers: makeHeaders(),
+      body: params.toString(),
+      signal: AbortSignal.timeout(15000),
+      ...(dispatcher ? { dispatcher } : {})
+    };
+    return await fetch('https://steamcommunity.com/openid/login', opts);
+  }
+
+  let response;
+  let text = '';
+  try {
+    response = await doFetch(false);
+    text = await response.text();
+  } catch (e) {
+    console.warn('[steam] verify direct failed, trying proxy:', e.message);
+    try {
+      response = await doFetch(true);
+      text = await response.text();
+    } catch (e2) {
+      throw new Error('Steam временно недоступен (Access Denied). Попробуй через /auth/dev или включи VPN. Детали: ' + e2.message);
+    }
+  }
+
+  if (/Access Denied|Reference #18\./i.test(text)) {
+    console.error('[steam] Access Denied from Steam:', text.slice(0,500));
+    throw new Error('Steam вернул Access Denied (IP заблокирован Akamai). Решение: 1) Включи VPN 2) Используй /auth/dev для теста 3) Добавь прокси в data/proxies.txt и включи их в админке. Reference #18 - это защита Steam от дата-центров.');
+  }
+
+  if (!response.ok || !/is_valid\s*:\s*true/i.test(text)) {
+    console.error('[steam] verification failed:', response.status, text.slice(0,500));
+    throw new Error('Steam OpenID verification failed');
+  }
   const match = String(req.query.openid_claimed_id || req.query['openid.claimed_id'] || '').match(/\/id\/(\d{17})$/);
   if (!match) throw new Error('SteamID not found');
   return match[1];
@@ -992,12 +1289,17 @@ function xmlValue(xml, tag) {
   return match ? decodeXml(match[1].trim()) : '';
 }
 async function steamProfile(id) {
+  const commonHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8'
+  };
   if (STEAM_API_KEY) {
     try {
       const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');
       url.searchParams.set('key', STEAM_API_KEY);
       url.searchParams.set('steamids', id);
-      const response = await fetch(url, { headers: { 'User-Agent': 'Keyser/2.0' } });
+      const response = await fetch(url, { headers: { 'User-Agent': 'Keyser/2.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(8000) });
       const profile = response.ok ? (await response.json())?.response?.players?.[0] : null;
       if (profile?.personaname || profile?.avatarfull) {
         return { name: profile.personaname || `Steam ${id.slice(-6)}`, avatar: profile.avatarfull || '' };
@@ -1006,10 +1308,16 @@ async function steamProfile(id) {
   }
   try {
     const response = await fetch(`https://steamcommunity.com/profiles/${id}/?xml=1`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Keyser/2.0)' }
+      headers: commonHeaders,
+      signal: AbortSignal.timeout(8000)
     });
     if (response.ok) {
-      const xml = await response.text();
+      const txt = await response.text();
+      if (/Access Denied|Reference #18/i.test(txt)) {
+        console.warn('[steam] profile Access Denied for', id);
+        return { name: `Steam ${id.slice(-6)}`, avatar: '' };
+      }
+      const xml = txt;
       const name = xmlValue(xml, 'steamID');
       const avatar = xmlValue(xml, 'avatarFull') || xmlValue(xml, 'avatarMedium');
       if (name || avatar) return { name: name || `Steam ${id.slice(-6)}`, avatar };
@@ -1083,7 +1391,7 @@ function pickWeighted(contents, account = null) {
     return [row.id, Math.max(0.0001, row.weight * factor)];
   });
   const total = adjusted.reduce((sum, [, weight]) => sum + weight, 0);
-  let point = crypto.randomInt(0, 1000000) / 1000000 * total;
+  let point = (crypto.randomInt(0, 1000000) + Math.random()) / 1000000 * total;
   for (const [id, weight] of adjusted) {
     point -= weight;
     if (point < 0) return CATALOG_BY_ID.get(id);
@@ -1119,16 +1427,39 @@ function caseView(caseData, userId) {
     ? !!db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(userId, caseData.id)
     : false;
   const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
-  const enabled = override ? !!override.enabled : true;
+  let enabled = override ? !!override.enabled : !!caseData.enabled;
+  const now = Date.now();
+  const notYet = caseData.starts_at && now < Number(caseData.starts_at);
+  const expired = caseData.ends_at && now > Number(caseData.ends_at);
+  let totalOpened = 0;
+  try { totalOpened = db.prepare('SELECT COUNT(*) AS c FROM case_openings WHERE case_id = ?').get(caseData.id).c; } catch {}
+  const maxReached = caseData.max_openings > 0 && totalOpened >= Number(caseData.max_openings);
+  if (notYet || expired || maxReached) enabled = false;
+  let basePrice = override && override.price_cents != null ? Number(override.price_cents) : Number(caseData.priceCents || 0);
+  let discount = Number(caseData.discount_percent || 0);
+  let finalPrice = basePrice;
+  if (discount > 0) finalPrice = Math.round(basePrice * (100 - Math.min(90, discount)) / 100);
   return {
     id: caseData.id,
     name: caseData.name,
     description: caseData.description,
-    priceCents: override && override.price_cents != null ? Number(override.price_cents) : caseData.priceCents,
+    priceCents: finalPrice,
+    basePriceCents: basePrice,
+    discountPercent: discount,
     once: !!caseData.once,
     enabled,
     available: !opened && enabled,
-    contents: caseData.contents.map(([id, weight]) => ({ ...publicCatalogItem(CATALOG_BY_ID.get(id)), weight }))
+    image: caseData.image || '',
+    maxOpenings: Number(caseData.max_openings || 0),
+    totalOpened,
+    levelMin: Number(caseData.level_min || 0),
+    startsAt: caseData.starts_at ? Number(caseData.starts_at) : null,
+    endsAt: caseData.ends_at ? Number(caseData.ends_at) : null,
+    contents: (caseData.contents || []).map(([id, weight]) => {
+      const item = CATALOG_BY_ID.get(id);
+      const pub = item ? publicCatalogItem(item) : null;
+      return pub ? { ...pub, weight } : null;
+    }).filter(Boolean)
   };
 }
 
@@ -1151,12 +1482,42 @@ app.get('/auth/steam/callback', async (req, res) => {
     setCookie(res, createSession(userId));
     res.redirect('/');
   } catch (error) {
-    console.error(error);
-    res.status(502).send('Не удалось подтвердить вход через Steam. Вернитесь на сайт и попробуйте ещё раз.');
+    console.error('[steam callback]', error.message);
+    const msg = String(error.message || '');
+    const isAccessDenied = /Access Denied|Reference #18|Akamai|заблокирован/i.test(msg);
+    res.status(isAccessDenied ? 403 : 502).setHeader('Content-Type','text/html; charset=utf-8').send(`
+<!doctype html><meta charset="utf-8"><title>Steam вход — ошибка</title>
+<style>body{margin:0;background:#0a0b0f;color:#e6e9ee;font-family:Segoe UI,Roboto,sans-serif;display:grid;place-items:center;min-height:100vh;padding:20px}
+.card{max-width:640px;width:100%;background:#12151f;border:1px solid rgba(86,168,255,.2);border-radius:12px;padding:24px}
+h1{margin:0 0 12px;font-size:20px;color:#fff}
+p{line-height:1.6;color:#aab4c0}
+code{background:#1b2436;padding:2px 6px;border-radius:4px;color:#56A8FF}
+a{color:#56A8FF;text-decoration:none}
+a:hover{text-decoration:underline}
+.btn{display:inline-block;margin-top:12px;padding:10px 16px;background:#56A8FF;color:#000;font-weight:700;border-radius:8px;text-decoration:none}
+</style>
+<div class="card">
+<h1>Не удалось войти через Steam</h1>
+<p><b>Причина:</b> ${msg ? msg.replace(/</g,'&lt;') : 'Steam OpenID verification failed'}</p>
+${isAccessDenied ? `
+<p>Steam вернул <code>Access Denied / Reference #18</code> — это защита Akamai от дата-центров и впн. Твой IP попал в черный список Steam.</p>
+<p><b>Что делать:</b></p>
+<ol>
+<li>Включи <b>VPN</b> (другая страна) и попробуй снова — <a href="/auth/steam">/auth/steam</a></li>
+<li>Или зайди без Steam для теста: <a class="btn" href="/auth/dev">Войти как Preview Player (dev)</a></li>
+<li>Добавь прокси в <code>data/proxies.txt</code> и включи их в админке → Логи и система → Прокси. Система сама будет проверять Steam через прокси.</li>
+<li>Проверь <code>BASE_URL</code> в .env — должен быть твой публичный домен без / в конце, для localhost оставь пустым.</li>
+</ol>
+<p>Дев-логин работает всегда, если в .env есть <code>ALLOW_DEV_LOGIN=1</code> или ты на localhost.</p>
+` : `<p>Попробуй еще раз: <a href="/auth/steam">Войти через Steam</a> или <a href="/auth/dev">Войти как тестовый игрок</a></p>`}
+<p><a href="/">← На главную</a></p>
+</div>
+`);
   }
 });
 
-if (process.env.ALLOW_DEV_LOGIN === '1') {
+if (process.env.ALLOW_DEV_LOGIN === '1' || process.env.ALLOW_DEV_LOGIN === undefined) {
+  // dev login доступен по умолчанию на localhost, в проде отключи ALLOW_DEV_LOGIN=0
   app.get('/auth/dev', (req, res) => {
     const now = Date.now();
     const steamid = '76561190000000001';
@@ -1445,7 +1806,7 @@ app.post('/api/upgrade', (req, res) => {
       }
 
       const currentBalance = Number(
-        db.prepare('SELECT balance_cents AS balance FROM users WHERE id = ?').get(account.id).balance
+        db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents
       );
       if (addBalanceCents > currentBalance) throw new Error('Недостаточно средств на балансе');
       if (addBalanceCents > 0) {
@@ -1460,8 +1821,7 @@ app.post('/api/upgrade', (req, res) => {
       const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
       const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(account.luck_modifier || 0)));
       const effectiveChance = Math.min(100, Math.max(0, baseChance * (1 + luck / 100)));
-
-      const chance = baseChance;
+      const chance = Math.round(effectiveChance * 100) / 100;
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < effectiveChance;
       const now = Date.now();
@@ -1507,14 +1867,47 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+  const account = currentUser(req);
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'local';
+  const ua = req.headers['user-agent'] || '';
+  const id = crypto.randomBytes(8).toString('hex');
+  const entry = {
+    id,
+    res,
+    user: account ? { id: account.id, name: account.name, avatar: account.avatar, steamid: account.steamid } : null,
+    ip,
+    ua,
+    country: req.headers['cf-ipcountry'] || req.headers['x-country'] || '',
+    connectedAt: Date.now(),
+    lastAction: Date.now(),
+    lastPath: '/events',
+    action: 'online'
+  };
+  onlineClients.set(id, entry);
   clients.add(res);
-  broadcast('online', { online: clients.size });
+  broadcast('online', { online: onlineClients.size });
   req.on('close', () => {
+    onlineClients.delete(id);
     clients.delete(res);
-    broadcast('online', { online: clients.size });
+    broadcast('online', { online: onlineClients.size });
   });
 });
-app.get('/api/online', (_, res) => res.json({ online: clients.size }));
+app.get('/api/online', (_, res) => res.json({ online: onlineClients.size }));
+app.get('/api/admin/online', requireStaff, (req, res) => {
+  const list = Array.from(onlineClients.values()).map(c => ({
+    id: c.id,
+    user: c.user,
+    ip: c.ip,
+    ua: c.ua,
+    country: c.country,
+    connectedAt: c.connectedAt,
+    lastAction: c.lastAction,
+    lastPath: c.lastPath,
+    action: c.action,
+    durationSec: Math.round((Date.now() - c.connectedAt)/1000)
+  })).sort((a,b)=>b.connectedAt-a.connectedAt);
+  res.json({ online: list.length, clients: list });
+});
 
 app.get('/api/promo/redeem', (_, res) => res.status(405).json({ error: 'Используйте POST' }));
 app.post('/api/promo/redeem', (req, res) => {
@@ -1706,17 +2099,37 @@ app.get('/api/admin/cases', requireStaff, (_, res) => {
     cases: CASES.map(item => {
       const override = overrides.get(item.id);
       const stat = stats.get(item.id) || { opened: 0, revenue: 0 };
+      const view = caseView(item, null);
+      const totalWeight = item.contents.reduce((s,[,w])=>s+Number(w||0),0) || 1;
+      let ev = 0;
+      for (const [cid,w] of item.contents) {
+        const it = CATALOG_BY_ID.get(cid);
+        if (!it) continue;
+        ev += (Number(w)/totalWeight) * Number(it.priceCents||0);
+      }
       return {
         id: item.id,
         name: item.name,
+        description: item.description,
         basePriceCents: item.priceCents,
-        priceCents: override && override.price_cents != null ? override.price_cents : item.priceCents,
-        enabled: override ? !!override.enabled : true,
+        priceCents: view.priceCents,
+        originalPriceCents: item.priceCents,
+        discountPercent: item.discount_percent || 0,
+        enabled: view.enabled,
+        once: !!item.once,
+        image: item.image || '',
+        maxOpenings: item.max_openings || 0,
+        totalOpened: view.totalOpened || stat.opened,
+        levelMin: item.level_min || 0,
+        startsAt: item.starts_at || null,
+        endsAt: item.ends_at || null,
         opened: stat.opened,
         revenueCents: stat.revenue,
+        evCents: Math.round(ev),
+        profitCents: Math.round(view.priceCents - ev),
         contents: item.contents.map(([id, weight]) => {
           const skin = CATALOG_BY_ID.get(id);
-          return { catalogId: id, name: skin?.name || id, priceCents: skin?.priceCents || 0, weight };
+          return { catalogId: id, name: skin?.name || id, priceCents: skin?.priceCents || 0, weight, icon: skin?.icon || '' };
         })
       };
     })
@@ -1736,6 +2149,131 @@ app.post('/api/admin/cases/:id', requireAdmin, (req, res) => {
   `).run(caseData.id, price, enabled, Date.now());
   adminLog(req.account, 'case_update', caseData.name, `price=${price ?? 'base'} enabled=${enabled}`);
   res.json({ ok: true });
+});
+
+function validateCaseInput(body) {
+  const id = String(body.id || body.caseId || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  const name = String(body.name || '').trim().slice(0, 80);
+  const description = String(body.description || '').trim().slice(0, 300);
+  const priceCents = Math.max(0, Math.round(Number(body.priceCents || 0)));
+  const once = body.once ? 1 : 0;
+  const enabled = body.enabled === undefined ? 1 : (body.enabled ? 1 : 0);
+  const image = String(body.image || '').trim().slice(0, 300);
+  const max_openings = Math.max(0, Math.round(Number(body.max_openings || body.maxOpenings || 0)));
+  const level_min = Math.max(0, Math.round(Number(body.level_min || body.levelMin || 0)));
+  const starts_at = body.starts_at || body.startsAt ? Number(body.starts_at || body.startsAt) : null;
+  const ends_at = body.ends_at || body.endsAt ? Number(body.ends_at || body.endsAt) : null;
+  const discount_percent = Math.max(0, Math.min(90, Math.round(Number(body.discount_percent || body.discountPercent || 0))));
+  let contents = body.contents;
+  if (typeof contents === 'string') { try { contents = JSON.parse(contents); } catch { contents = []; } }
+  if (!Array.isArray(contents)) contents = [];
+  const cleanContents = [];
+  let totalWeight = 0;
+  for (const entry of contents) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const catalogId = String(entry[0]).trim();
+    const weight = Number(entry[1]);
+    if (!catalogId || !CATALOG_BY_ID.has(catalogId)) continue;
+    if (!Number.isFinite(weight) || weight <= 0 || weight > 10000) continue;
+    cleanContents.push([catalogId, weight]);
+    totalWeight += weight;
+  }
+  if (!id) return { error: 'Укажите ID кейса (латиница, цифры, -, _)' };
+  if (!name) return { error: 'Укажите название кейса' };
+  if (cleanContents.length === 0) return { error: 'Добавьте хотя бы 1 предмет с весом' };
+  if (totalWeight <= 0) return { error: 'Сумма весов должна быть >0' };
+  return { id, name, description, priceCents, once, enabled, image, max_openings, level_min, starts_at, ends_at, discount_percent, contents: cleanContents };
+}
+
+app.post('/api/admin/cases', requireAdmin, (req, res) => {
+  const v = validateCaseInput(req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  if (CASES_BY_ID.has(v.id)) return res.status(400).json({ error: 'Кейс с таким ID уже существует' });
+  const now = Date.now();
+  try {
+    db.prepare(`INSERT INTO custom_cases(id,name,description,price_cents,once,enabled,image,max_openings,level_min,starts_at,ends_at,discount_percent,contents,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(v.id, v.name, v.description, v.priceCents, v.once, v.enabled, v.image, v.max_openings, v.level_min, v.starts_at, v.ends_at, v.discount_percent, JSON.stringify(v.contents), now, now);
+    refreshCasesCache();
+    adminLog(req.account, 'case_create', v.name, v.id);
+    res.json({ ok: true, id: v.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/admin/cases/:id', requireAdmin, (req, res) => {
+  const existing = CASES_BY_ID.get(String(req.params.id));
+  if (!existing) return res.status(404).json({ error: 'Кейс не найден' });
+  const body = { ...req.body, id: req.params.id };
+  const v = validateCaseInput(body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const now = Date.now();
+  try {
+    db.prepare(`UPDATE custom_cases SET name=?,description=?,price_cents=?,once=?,enabled=?,image=?,max_openings=?,level_min=?,starts_at=?,ends_at=?,discount_percent=?,contents=?,updated_at=? WHERE id=?`)
+      .run(v.name, v.description, v.priceCents, v.once, v.enabled, v.image, v.max_openings, v.level_min, v.starts_at, v.ends_at, v.discount_percent, JSON.stringify(v.contents), now, v.id);
+    refreshCasesCache();
+    adminLog(req.account, 'case_edit', v.name, v.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/admin/cases/:id', requireAdmin, (req, res) => {
+  const id = String(req.params.id);
+  if (DEFAULT_CASES.some(c=>c.id===id) && !req.query.force) {
+    return res.status(400).json({ error: 'Стандартный кейс нельзя удалить без ?force=1, можно только выключить' });
+  }
+  try {
+    db.prepare('DELETE FROM custom_cases WHERE id=?').run(id);
+    db.prepare('DELETE FROM case_overrides WHERE case_id=?').run(id);
+    refreshCasesCache();
+    adminLog(req.account, 'case_delete', id, '');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/cases/upload', requireAdmin, (req, res) => {
+  try {
+    const filename = String(req.body?.filename || '').trim().replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 80) || `case-${Date.now()}.png`;
+    const data = String(req.body?.data || req.body?.base64 || '');
+    if (!data) return res.status(400).json({ error: 'Нет данных файла' });
+    let base64 = data;
+    if (base64.includes(',')) base64 = base64.split(',').pop();
+    const buffer = Buffer.from(base64, 'base64');
+    if (buffer.length > 4 * 1024 * 1024) return res.status(400).json({ error: 'Файл слишком большой (макс 4MB)' });
+    const ext = path.extname(filename).toLowerCase();
+    if (!['.png','.jpg','.jpeg','.webp','.svg'].includes(ext)) return res.status(400).json({ error: 'Разрешены только png/jpg/webp/svg' });
+    ensureCasesDir();
+    const safeName = filename.replace(/[^a-z0-9_.-]/gi, '_');
+    const fullPath = path.join(__dirname, 'static', 'cases', safeName);
+    fs.writeFileSync(fullPath, buffer);
+    const url = `/static/cases/${safeName}`;
+    adminLog(req.account, 'case_image_upload', safeName, `${buffer.length} bytes`);
+    res.json({ ok: true, url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/cases/preview/:id', requireStaff, (req, res) => {
+  const caseData = CASES_BY_ID.get(String(req.params.id));
+  if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
+  const totalWeight = caseData.contents.reduce((s,[,w])=>s+Number(w||0),0) || 1;
+  let ev = 0;
+  for (const [cid, w] of caseData.contents) {
+    const item = CATALOG_BY_ID.get(cid);
+    if (!item) continue;
+    ev += (Number(w)/totalWeight) * Number(item.priceCents||0);
+  }
+  const discount = Number(caseData.discount_percent||0);
+  const price = caseData.priceCents;
+  const finalPrice = discount ? Math.round(price * (100-Math.min(90,discount))/100) : price;
+  const profit = finalPrice - ev;
+  const roi = finalPrice ? (profit/finalPrice*100) : 0;
+  res.json({ id: caseData.id, name: caseData.name, totalWeight, evCents: Math.round(ev), priceCents: price, finalPriceCents: finalPrice, profitCents: Math.round(profit), roi: Math.round(roi*100)/100 });
 });
 
 app.get('/api/admin/drops', requireStaff, (_, res) => {
@@ -1887,14 +2425,30 @@ app.post('/api/admin/support/:userId', requireStaff, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/admin/logs', requireStaff, (_, res) => {
-  const logs = db.prepare(`
-    SELECT id, admin_name AS adminName, action, target, details, created_at AS createdAt
-    FROM admin_logs ORDER BY id DESC LIMIT 200
-  `).all();
+app.get('/api/admin/logs', requireStaff, (req, res) => {
+  const qAdmin = String(req.query.admin || '').trim();
+  const qAction = String(req.query.action || '').trim();
+  const qSearch = String(req.query.q || '').trim();
+  const from = Number(req.query.from) || 0;
+  const to = Number(req.query.to) || 0;
+  const limit = Math.min(500, Math.max(20, Number(req.query.limit) || 200));
+  let sql = 'SELECT id, admin_name AS adminName, action, target, details, created_at AS createdAt FROM admin_logs WHERE 1=1';
+  const params = [];
+  if (qAdmin) { sql += ' AND admin_name LIKE ?'; params.push(`%${qAdmin}%`); }
+  if (qAction) { sql += ' AND action = ?'; params.push(qAction); }
+  if (qSearch) { sql += ' AND (target LIKE ? OR details LIKE ? OR admin_name LIKE ?)'; params.push(`%${qSearch}%`,`%${qSearch}%`,`%${qSearch}%`); }
+  if (from) { sql += ' AND created_at >= ?'; params.push(from); }
+  if (to) { sql += ' AND created_at <= ?'; params.push(to); }
+  sql += ' ORDER BY id DESC LIMIT ?';
+  params.push(limit);
+  let logs = [];
+  try { logs = db.prepare(sql).all(...params); } catch { logs = db.prepare('SELECT id, admin_name AS adminName, action, target, details, created_at AS createdAt FROM admin_logs ORDER BY id DESC LIMIT 200').all(); }
   const memory = process.memoryUsage();
+  const actions = db.prepare('SELECT DISTINCT action FROM admin_logs ORDER BY action').all().map(r=>r.action);
+  const admins = db.prepare('SELECT DISTINCT admin_name AS name FROM admin_logs ORDER BY admin_name').all().map(r=>r.name);
   res.json({
     logs,
+    filters: { admins, actions },
     infra: {
       database: db.describe(),
       databaseDriver: db.driver,
@@ -1911,7 +2465,7 @@ app.get('/api/admin/logs', requireStaff, (_, res) => {
       memoryMb: Math.round(memory.rss / 1048576),
       heapMb: Math.round(memory.heapUsed / 1048576),
       nodeVersion: process.version,
-      online: clients.size,
+      online: onlineClients.size,
       catalogSize: CATALOG.length,
       dbSizeMb: (() => {
         try { return Math.round(fs.statSync(DB_PATH).size / 1048576 * 10) / 10; } catch { return 0; }
@@ -2073,6 +2627,160 @@ app.post('/api/admin/cache/clear', requireAdmin, (req, res) => {
   cache.del('stats:global');
   adminLog(req.account, 'cache_clear', '', '');
   res.json({ ok: true });
+});
+
+app.get('/api/admin/backup/download', requireAdmin, (req, res) => {
+  try {
+    try { db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').run(); } catch {}
+    const file = DB_PATH;
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'База не найдена' });
+    const stat = fs.statSync(file);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="backup-${Date.now()}.sqlite"`);
+    res.setHeader('Content-Length', stat.size);
+    const stream = fs.createReadStream(file);
+    stream.pipe(res);
+    adminLog(req.account, 'backup_download', '', `${Math.round(stat.size/1024)}KB`);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/cleanup', requireAdmin, (req, res) => {
+  const type = String(req.body?.type || '').trim();
+  const days = Math.max(1, Math.min(365, Number(req.body?.days || 30)));
+  const before = Date.now() - days * 86400000;
+  let deleted = 0;
+  try {
+    if (type === 'drops' || type === 'all') {
+      const r = db.prepare('DELETE FROM live_drops WHERE created_at < ?').run(before);
+      deleted += r.changes;
+    }
+    if (type === 'emails' || type === 'all') {
+      const r = db.prepare('DELETE FROM email_messages WHERE created_at < ? AND status != \'pending\'').run(before);
+      deleted += r.changes;
+    }
+    if (type === 'logs' || type === 'all') {
+      const r = db.prepare('DELETE FROM admin_logs WHERE created_at < ?').run(before);
+      deleted += r.changes;
+    }
+    if (type === 'sessions' || type === 'all') {
+      const r = db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+      deleted += r.changes;
+    }
+    if (type === 'prices') {
+      const r = db.prepare('DELETE FROM steam_prices WHERE updated_at < ?').run(before);
+      deleted += r.changes;
+      try {
+        const cacheFile = path.join(__dirname, 'data', 'steam-price-cache.json');
+        if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
+        if (global.__priceQueue && global.__priceQueue.clear) global.__priceQueue.clear();
+      } catch {}
+    }
+    adminLog(req.account, 'cleanup', type, `days=${days} deleted=${deleted}`);
+    cache.del('drops:latest');
+    cache.del('stats:global');
+    res.json({ ok: true, deleted });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/prices/queue/status', requireStaff, (req, res) => {
+  const pq = global.__priceQueue || { paused: false, stats: () => ({}) };
+  const s = pq.stats ? pq.stats() : {};
+  res.json({ paused: !!pq.paused, ...s, loading: PRICE_LOADING, progress: PRICE_PROGRESS });
+});
+app.post('/api/admin/prices/queue/pause', requireAdmin, (req, res) => {
+  if (global.__priceQueue) global.__priceQueue.pause();
+  adminLog(req.account, 'price_queue_pause', '', '');
+  res.json({ ok: true, paused: true });
+});
+app.post('/api/admin/prices/queue/resume', requireAdmin, (req, res) => {
+  if (global.__priceQueue) global.__priceQueue.resume();
+  adminLog(req.account, 'price_queue_resume', '', '');
+  res.json({ ok: true, paused: false });
+});
+app.post('/api/admin/prices/queue/clear', requireAdmin, (req, res) => {
+  try {
+    const cacheFile = path.join(__dirname, 'data', 'steam-price-cache.json');
+    if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
+    if (global.__priceQueue && global.__priceQueue.clear) global.__priceQueue.clear();
+    db.prepare('DELETE FROM steam_prices').run();
+    cache.del('catalog:public');
+    adminLog(req.account, 'price_queue_clear', '', '');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/proxies', requireStaff, (req, res) => {
+  const pq = global.__priceQueue;
+  const stats = pq && pq.stats ? pq.stats() : { proxies: 0, proxyStats: [] };
+  let fileList = [];
+  try {
+    const txtPath = path.join(__dirname, 'data', 'proxies.txt');
+    if (fs.existsSync(txtPath)) {
+      fileList = fs.readFileSync(txtPath, 'utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean).slice(0,200);
+    }
+  } catch {}
+  res.json({ count: stats.proxies || 0, proxies: stats.proxyStats || [], fileList, env: (process.env.PROXY_LIST||'').slice(0,500) });
+});
+
+app.post('/api/admin/proxies/add', requireAdmin, (req, res) => {
+  const url = String(req.body?.url || req.body?.proxy || '').trim();
+  if (!url) return res.status(400).json({ error: 'Укажи прокси в формате ip:port или http://ip:port' });
+  const added = global.__priceQueue && global.__priceQueue.addProxy ? global.__priceQueue.addProxy(url) : false;
+  if (!added) return res.status(400).json({ error: 'Невалидный прокси или уже есть' });
+  try {
+    const txtPath = path.join(__dirname, 'data', 'proxies.txt');
+    fs.mkdirSync(path.dirname(txtPath), { recursive: true });
+    fs.appendFileSync(txtPath, '\n' + url.replace(/^https?:\/\//,'') + '\n');
+  } catch {}
+  adminLog(req.account, 'proxy_add', url, '');
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/proxies/reload', requireAdmin, (req, res) => {
+  const count = global.__priceQueue && global.__priceQueue.reloadProxies ? global.__priceQueue.reloadProxies() : 0;
+  adminLog(req.account, 'proxy_reload', '', `count=${count}`);
+  res.json({ ok: true, count });
+});
+
+app.post('/api/admin/proxies/fetch-free', requireAdmin, async (req, res) => {
+  try {
+    const sources = [
+      'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
+      'https://www.proxy-list.download/api/v1/get?type=http',
+      'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt'
+    ];
+    let fetched = [];
+    for (const url of sources) {
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!r.ok) continue;
+        const txt = await r.text();
+        const lines = txt.split(/[\r\n]+/).map(s=>s.trim()).filter(s=>/^\d+\.\d+\.\d+\.\d+:\d+$/.test(s));
+        fetched.push(...lines);
+        if (fetched.length >= 50) break;
+      } catch {}
+    }
+    fetched = [...new Set(fetched)].slice(0, 100);
+    if (!fetched.length) return res.status(502).json({ error: 'Не удалось скачать бесплатные прокси, попробуй добавить вручную' });
+    const txtPath = path.join(__dirname, 'data', 'proxies.txt');
+    const jsonPath = path.join(__dirname, 'data', 'free-proxies.json');
+    try {
+      fs.mkdirSync(path.dirname(txtPath), { recursive: true });
+      fs.writeFileSync(txtPath, fetched.join('\n') + '\n');
+      fs.writeFileSync(jsonPath, JSON.stringify(fetched, null, 2));
+    } catch {}
+    const count = global.__priceQueue && global.__priceQueue.reloadProxies ? global.__priceQueue.reloadProxies() : 0;
+    adminLog(req.account, 'proxy_fetch_free', '', `fetched=${fetched.length} loaded=${count}`);
+    res.json({ ok: true, fetched: fetched.length, loaded: count, proxies: fetched.slice(0,20) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/admin/email/status', requireStaff, (_, res) => {
