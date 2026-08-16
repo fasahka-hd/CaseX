@@ -711,6 +711,8 @@ function authConsentModal() {
         <div class="auth-check-row" onclick="toggleConsent('age')"><button type="button" role="checkbox" data-consent="age" aria-checked="${S.ageAccepted}" class="auth-checkbox ${S.ageAccepted ? 'checked' : ''}">${check(S.ageAccepted)}</button><span>Подтверждаю, что мне больше 18 лет</span></div>
         <div class="auth-check-row" onclick="toggleConsent('terms')"><button type="button" role="checkbox" data-consent="terms" aria-checked="${S.termsAccepted}" class="auth-checkbox ${S.termsAccepted ? 'checked' : ''}">${check(S.termsAccepted)}</button><span>Принимаю <a href="/tos.html" onclick="event.stopPropagation()" target="_blank">правила и условия</a> использования сайта</span></div>
         <button class="auth-steam-button" data-auth-submit ${ready ? '' : 'disabled'} onclick="confirmSteamLogin()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>
+        <button class="auth-steam-button" style="background:linear-gradient(135deg,#2d2d2d,#1a1a2e);margin-top:8px;border:1px solid rgba(255,255,255,.1)" onclick="devLogin()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg><span>ВОЙТИ БЕЗ STEAM (если Steam заблокирован)</span></button>
+        <p style="margin:12px 0 0;font-size:12px;color:#8d97a4;text-align:center">Steam выдал <strong>Access Denied / Reference #18</strong>? Это Steam блокирует твой IP — входи через Steam с VPN/другого интернета, или используй кнопку «БЕЗ STEAM» для теста.</p>
       </div>
     </div>
   </div>`;
@@ -1341,6 +1343,9 @@ function confirmSteamLogin() {
   if (!S.ageAccepted || !S.termsAccepted) return;
   location.href = '/auth/steam';
 }
+function devLogin() {
+  location.href = '/auth/dev';
+}
 async function logout() { await api('/auth/logout', { method: 'POST' }); location.reload(); }
 async function openSettings() {
   try {
@@ -1474,7 +1479,7 @@ function toast(text, type = '') {
 
 Object.assign(window, {
   go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
-  login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
+  login, closeAuthModal, toggleConsent, confirmSteamLogin, devLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat,

@@ -1209,12 +1209,16 @@ function steamLogin(req) {
   return `https://steamcommunity.com/openid/login?${params}`;
 }
 async function verifySteam(req) {
-  const expectedReturnTo = `${requestBase(req)}/auth/steam/callback`;
-  const providedReturnTo = String(
-    req.query['openid.return_to'] || req.query.openid_return_to || req.query['openid.return_to'] || req.query.openid_return_to || ''
-  );
+  // Принимаем return_to как по BASE_URL, так и по реальному хосту запроса.
+  // Это чинит "OpenID return_to mismatch", когда сайт открыт по IP/домену,
+  // а BASE_URL в .env задан иначе (или наоборот).
+  const normalizeUrl = u => String(u || '').trim().toLowerCase().replace(/\/+$/, '');
+  const baseFromEnv = normalizeUrl(BASE_URL);
+  const baseFromReq = normalizeUrl(`${req.protocol}://${req.get('host')}`);
+  const expectedSet = new Set([baseFromEnv, baseFromReq].filter(Boolean).map(b => `${b}/auth/steam/callback`));
+  const providedReturnTo = String(req.query['openid.return_to'] || req.query.openid_return_to || '');
   if (!providedReturnTo) throw new Error('OpenID return_to missing');
-  if (providedReturnTo !== expectedReturnTo) throw new Error('OpenID return_to mismatch');
+  if (!expectedSet.has(normalizeUrl(providedReturnTo))) throw new Error('OpenID return_to mismatch');
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) params.set(key, String(value));
   params.set('openid.mode', 'check_authentication');
@@ -1227,22 +1231,7 @@ async function verifySteam(req) {
     'Referer': 'https://steamcommunity.com/'
   });
 
-  async function doFetch(attemptProxy) {
-    let dispatcher = undefined;
-    if (attemptProxy) {
-      try {
-        const pq = global.__priceQueue;
-        if (pq && pq.stats) {
-          const st = pq.stats();
-          const list = (st.proxyStats || []).filter(p=>!p.blocked);
-          if (list.length) {
-            const pick = list[Math.floor(Math.random()*list.length)];
-            const { ProxyAgent } = require('undici');
-            dispatcher = new ProxyAgent(pick.url);
-          }
-        }
-      } catch {}
-    }
+  async function doFetch(dispatcher) {
     const opts = {
       method: 'POST',
       headers: makeHeaders(),
@@ -1253,34 +1242,71 @@ async function verifySteam(req) {
     return await fetch('https://steamcommunity.com/openid/login', opts);
   }
 
-  let response;
-  let text = '';
-  try {
-    response = await doFetch(false);
-    text = await response.text();
-  } catch (e) {
-    console.warn('[steam] verify direct failed, trying proxy:', e.message);
+  function proxyDispatcherFor(proxyUrl) {
     try {
-      response = await doFetch(true);
-      text = await response.text();
-    } catch (e2) {
-      throw new Error('Steam временно недоступен (Access Denied). Попробуй через /auth/dev или включи VPN. Детали: ' + e2.message);
+      const { ProxyAgent } = require('undici');
+      return new ProxyAgent(proxyUrl);
+    } catch {
+      return null;
     }
   }
 
-  if (/Access Denied|Reference #18\./i.test(text)) {
-    console.error('[steam] Access Denied from Steam:', text.slice(0,500));
-    throw new Error('Steam вернул Access Denied (IP заблокирован Akamai). Решение: 1) Включи VPN 2) Используй /auth/dev для теста 3) Добавь прокси в data/proxies.txt и включи их в админке. Reference #18 - это защита Steam от дата-центров.');
+  let response = null;
+  let text = '';
+  const attempts = [];
+
+  // 1) Прямое подключение
+  try {
+    response = await doFetch();
+    text = await response.text();
+  } catch (e) {
+    attempts.push('direct: ' + (e && e.message));
   }
 
-  if (!response.ok || !/is_valid\s*:\s*true/i.test(text)) {
-    console.error('[steam] verification failed:', response.status, text.slice(0,500));
+  const looksBlocked = !response || !response.ok || /Access Denied|Reference #18\.|is_valid\s*:\s*false/i.test(text);
+
+  // 2) Если прямой запрос не прошёл — пробуем прокси по очереди
+  if (looksBlocked) {
+    let list = [];
+    try {
+      const pq = global.__priceQueue;
+      if (pq && pq.stats) list = (pq.stats().proxyStats || []).filter(p => !p.blocked);
+    } catch {}
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    for (const p of list.slice(0, 10)) {
+      const dispatcher = proxyDispatcherFor(p.url);
+      if (!dispatcher) continue;
+      try {
+        const r2 = await doFetch(dispatcher);
+        const t2 = await r2.text();
+        attempts.push('proxy ' + p.url + ': HTTP ' + r2.status);
+        if (r2.ok && !/Access Denied|Reference #18\./i.test(t2) && /is_valid\s*:\s*true/i.test(t2)) {
+          response = r2;
+          text = t2;
+          break;
+        }
+      } catch (e) {
+        attempts.push('proxy ' + p.url + ': ' + (e && e.message));
+      }
+    }
+  }
+
+  if (!response || !response.ok || !/is_valid\s*:\s*true/i.test(text)) {
+    if (/Access Denied|Reference #18\./i.test(text || '')) {
+      console.error('[steam] Access Denied from Steam. Попытки:', attempts.join(' | '));
+      throw new Error('Steam вернул Access Denied (Reference #18) — это защита Akamai, Steam заблокировал твой IP. Вход через Steam возможен только с незаблокированного интернета: 1) смени IP (перезагрузи роутер / мобильный интернет / другой Wi-Fi) 2) включи VPN с чистым IP 3) подожди 24-48 часов, блок снимается сам. Если блокирует сам сервер — добавь рабочие прокси в data/proxies.txt и нажми "Прокси -> Перезагрузить" в админке.');
+    }
+    console.error('[steam] verification failed:', response && response.status, (text || '').slice(0, 500));
     throw new Error('Steam OpenID verification failed');
   }
   const match = String(req.query.openid_claimed_id || req.query['openid.claimed_id'] || '').match(/\/id\/(\d{17})$/);
   if (!match) throw new Error('SteamID not found');
   return match[1];
 }
+
 function decodeXml(value = '') {
   return String(value).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
