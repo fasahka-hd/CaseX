@@ -1,14 +1,14 @@
 'use strict';
 
-// Steam Market priceoverview is rate-limited. Keep the queue, but persist the
-// results so a server restart never starts a 2k-item price crawl from zero.
-// Cached values are served immediately (stale-while-revalidate) and refreshed
-// in the background.
+// Steam Market priceoverview is rate-limited. The important part is that a
+// restart must NEVER turn into another multi-hour crawl: known prices are
+// served from the persistent cache immediately and refreshed in the
+// background. We do not bypass Steam limits or rotate/proxy requests.
 const fs = require('fs');
 const path = require('path');
 
-const CACHE_TTL = 24 * 60 * 60 * 1000;
-const STALE_TTL = 7 * 24 * 60 * 60 * 1000;
+const FRESH_TTL = 2 * 60 * 60 * 1000;
+const STALE_TTL = 30 * 24 * 60 * 60 * 1000;
 const MIN_INTERVAL = 4000;
 const RETRY_AFTER_429 = 60 * 1000;
 const CACHE_FILE = path.join(process.cwd(), 'data', 'steam-price-cache.json');
@@ -28,7 +28,7 @@ function loadDiskCache() {
     const raw = fs.readFileSync(CACHE_FILE, 'utf8');
     const data = JSON.parse(raw);
     for (const [url, entry] of Object.entries(data)) {
-      if (entry && entry.at && entry.data && Date.now() - entry.at <= STALE_TTL) {
+      if (entry && Number(entry.at) > 0 && entry.data && Date.now() - Number(entry.at) <= STALE_TTL) {
         cache.set(url, entry);
       }
     }
@@ -40,8 +40,7 @@ function saveDiskCache() {
   if (!dirty) return;
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-    const data = Object.fromEntries(cache);
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(data), 'utf8');
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(cache)), 'utf8');
     dirty = false;
   } catch (error) {
     console.warn(`[steam-price-queue] Не удалось сохранить кеш: ${error.message}`);
@@ -61,34 +60,33 @@ function isSteamPriceRequest(url) {
     && /(?:[?&])appid=730(?:&|$)/i.test(url);
 }
 
-function makeResponse(data, cacheState) {
+function makeResponse(data, state) {
   return new Response(JSON.stringify(data), {
     status: 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'x-steam-price-cache': cacheState
+      'x-steam-price-cache': state
     }
   });
 }
 
-function cached(url) {
+function getCached(url) {
   const entry = cache.get(url);
   if (!entry) return null;
-
-  const age = Date.now() - entry.at;
+  const age = Date.now() - Number(entry.at);
   if (age > STALE_TTL) {
     cache.delete(url);
     return null;
   }
-
-  return makeResponse(entry.data, age <= CACHE_TTL ? 'hit' : 'stale');
+  return { response: makeResponse(entry.data, age <= FRESH_TTL ? 'hit' : 'stale'), stale: age > FRESH_TTL };
 }
 
-function enqueueRefresh(url, init) {
-  if (queuedUrls.has(url)) return;
-  queuedUrls.add(url);
-  queue.push({ url, init, background: true });
-  runQueue().catch(error => console.error('[steam-price-queue]', error));
+function enqueue(url, init, foreground = false, resolve = null, reject = null) {
+  if (foreground || !queuedUrls.has(url)) {
+    queuedUrls.add(url);
+    queue.push({ url, init, foreground, resolve, reject });
+    runQueue().catch(error => console.error('[steam-price-queue]', error));
+  }
 }
 
 async function runQueue() {
@@ -107,13 +105,13 @@ async function runQueue() {
         lastRequestAt = Date.now();
         response = await nativeFetch(task.url, task.init);
       } catch (error) {
-        if (!task.background && task.reject) task.reject(error);
+        if (task.foreground && task.reject) task.reject(error);
         continue;
       }
 
       if (response.status === 429) {
-        queue.unshift(task);
         queuedUrls.add(task.url);
+        queue.unshift(task);
         await sleep(RETRY_AFTER_429);
         continue;
       }
@@ -124,12 +122,12 @@ async function runQueue() {
           cache.set(task.url, { at: Date.now(), data });
           dirty = true;
           saveDiskCache();
-          if (!task.background && task.resolve) task.resolve(makeResponse(data, 'miss'));
+          if (task.foreground && task.resolve) task.resolve(makeResponse(data, 'miss'));
           continue;
         } catch (_) {}
       }
 
-      if (!task.background && task.resolve) task.resolve(response);
+      if (task.foreground && task.resolve) task.resolve(response);
     }
   } finally {
     running = false;
@@ -140,29 +138,19 @@ global.fetch = function steamAwareFetch(input, init) {
   const url = requestUrl(input);
   if (!isSteamPriceRequest(url)) return nativeFetch(input, init);
 
-  const hit = cached(url);
-  if (hit) {
-    // Serve the cached price immediately. If it is older than a day, refresh
-    // it in the background instead of delaying server startup.
-    if (hit.headers.get('x-steam-price-cache') === 'stale') {
-      enqueueRefresh(url, init);
-    }
-    return Promise.resolve(hit);
+  const cached = getCached(url);
+  if (cached) {
+    // Known price -> return immediately. If older than FRESH_TTL, update it
+    // asynchronously. The caller never waits for the network refresh.
+    if (cached.stale) enqueue(url, init, false);
+    return Promise.resolve(cached.response);
   }
 
   return new Promise((resolve, reject) => {
-    if (queuedUrls.has(url)) {
-      // Another request is already refreshing this URL. If no cache exists,
-      // attach a normal foreground request so the caller still receives data.
-      queue.push({ url, init, resolve, reject, background: false });
-      return;
-    }
-    queuedUrls.add(url);
-    queue.push({ url, init, resolve, reject, background: false });
-    runQueue().catch(error => reject(error));
+    enqueue(url, init, true, resolve, reject);
   });
 };
 
 loadDiskCache();
 process.once('exit', saveDiskCache);
-console.log('[steam-price-queue] Steam prices use persistent cache + background refresh.');
+console.log('[steam-price-queue] Persistent cache enabled; known prices are instant, refresh runs in background.');
