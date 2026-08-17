@@ -32,7 +32,7 @@
     emailQueueStatus: '',
     broadcasts: [],
     editingCase: null,
-    caseBuilderSearch: '',
+    caseBuilderSearch: '', caseBuilderTab: 'settings', caseCatalogPage: 1,
     caseBuilderContents: [],
     online: [],
     priceQueue: null, priceConfig: null, priceHistory: [], proxyFilter: 'all', site: null, casePreview: null,
@@ -157,6 +157,7 @@
   }
 
   function render() {
+    const modalScroll = root.querySelector('.modal')?.scrollTop || 0;
     const tabs = TABS
       .filter(tab => !tab.adminOnly || isAdmin())
       .map(tab => `<button class="${state.tab === tab.key ? 'active' : ''}" data-tab="${tab.key}">${icon(tab.key)}${tab.label}</button>`)
@@ -183,6 +184,8 @@
       button.addEventListener('click', () => selectTab(button.dataset.tab));
     });
     bindView();
+    const modalBody = root.querySelector('.modal');
+    if (modalBody && modalScroll) modalBody.scrollTop = modalScroll;
   }
 
   function viewFor(tab) {
@@ -332,7 +335,7 @@
         <td><span class="tag ${esc(user.role)}">${esc(ROLE_LABELS[user.role] || user.role)}</span>${user.isBot ? ' <span class="tag bot">бот</span>' : ''}${user.banned ? ' <span class="tag banned">бан</span>' : ''}${user.frozen?' <span class="tag warn">заморожен</span>':''}${(user.tags||[]).map(tag=>` <span class="tag user-tag tag-${esc(tag)}">${esc(USER_TAGS[tag]||tag)}</span>`).join('')}</td>
         <td class="num mono">${money(user.balanceCents)}</td>
         <td class="num mono">${Number(user.luckModifier || 0)}%</td>
-        <td class="num"><button class="act small" data-user="${user.id}">Открыть</button></td>
+        <td class="num user-actions"><button class="act small" data-user="${user.id}">Управление</button><a class="act small" href="/profile/${user.id}" target="_blank">Профиль</a></td>
       </tr>`).join('') : '<tr><td colspan="5" class="empty-row">Ничего не найдено</td></tr>';
 
     return `
@@ -430,7 +433,7 @@
       <div class="modal-back" data-close-modal>
         <div class="modal">
           <header>
-            <h3>${esc(user.name)} <span class="tag ${esc(user.role)}">${esc(ROLE_LABELS[user.role] || user.role)}</span>${user.banned ? ' <span class="tag banned">заблокирован</span>' : ''}${user.frozen?' <span class="tag warn">заморожен</span>':''}${(user.tags||[]).map(tag=>` <span class="tag user-tag tag-${esc(tag)}">${esc(USER_TAGS[tag]||tag)}</span>`).join('')}</h3>
+            <h3>${esc(user.name)} <span class="tag ${esc(user.role)}">${esc(ROLE_LABELS[user.role] || user.role)}</span>${user.banned ? ' <span class="tag banned">заблокирован</span>' : ''}${user.frozen?' <span class="tag warn">заморожен</span>':''}${(user.tags||[]).map(tag=>` <span class="tag user-tag tag-${esc(tag)}">${esc(USER_TAGS[tag]||tag)}</span>`).join('')}</h3><a class="act small" href="/profile/${user.id}" target="_blank">Открыть профиль на сайте</a>
             <button data-close-modal>×</button>
           </header>
           <div class="body">
@@ -510,57 +513,10 @@
   }
 
   function casesView() {
-    const cases = state.cases.map(item => {
-      const ev = item.evCents || 0;
-      const profit = item.profitCents || 0;
-      const roi = item.priceCents ? Math.round(profit/item.priceCents*100) : 0;
-      const img = item.image ? `<img src="${esc(item.image)}" style="width:38px;height:28px;object-fit:contain;background:#111;border-radius:4px">` : `<div style="width:38px;height:28px;background:#111;border-radius:4px;display:grid;place-items:center;color:#555">?</div>`;
-      return `
-      <tr>
-        <td><div style="display:flex;gap:8px;align-items:center">${img}<div><b>${esc(item.name)}</b><small class="muted" style="display:block">${esc(item.id)} ${item.discountPercent?`<span style="color:#44c987">-${item.discountPercent}%</span>`:''}</small></div></div></td>
-        <td class="num mono">${money(item.priceCents)}${item.basePriceCents!==item.priceCents?`<br><small style="text-decoration:line-through;color:#777">${money(item.basePriceCents)}</small>`:''}<br><small class="muted">EV ${money(ev)} ROI ${roi}%</small></td>
-        <td><span class="tag ${item.enabled ? 'on' : 'off'}">${item.enabled ? 'вкл' : 'выкл'}</span>${item.once?'<span class="tag warn" style="margin-left:4px">once</span>':''}${item.maxOpenings?`<small class="muted" style="display:block">${item.totalOpened||0}/${item.maxOpenings}</small>`:''}</td>
-        <td class="num mono">${num(item.opened)}<br><small class="muted">${money(item.revenueCents)}</small></td>
-        <td class="case-actions">
-          ${isAdmin() ? `
-          <button class="act case-action primary" data-editcase="${esc(item.id)}">Редактировать</button>
-          <button class="act case-action" data-previewcase="${esc(item.id)}">EV</button>
-          <button class="act case-action ${item.enabled ? 'danger' : 'ok'}" data-togglecase="${esc(item.id)}" data-enabled="${item.enabled ? 1 : 0}">${item.enabled ? 'Выкл' : 'Вкл'}</button>
-          <button class="act case-action danger" data-delcase="${esc(item.id)}">Удалить</button>
-          ` : ''}
-        </td>
-      </tr>`;
-    }).join('');
-
-    const drops = state.drops.length ? state.drops.map(drop => `
-      <tr>
-        <td>${esc(drop.userName)}</td>
-        <td>${esc(drop.itemName)}</td>
-        <td class="num mono">${money(drop.priceCents)}</td>
-        <td>${esc(drop.source)}</td>
-        <td class="muted">${when(drop.createdAt)}</td>
-        <td class="num">${isAdmin() ? `<button class="act small danger" data-deldrop="${drop.id}">Удалить</button>` : ''}</td>
-      </tr>`).join('') : '<tr><td colspan="6" class="empty-row">Дропов нет</td></tr>';
-
-    const builder = state.editingCase ? caseBuilderModal() : '';
-
-    return `
-      <div class="block">
-        <div style="display:flex;justify-content:space-between;align-items:center"><h2>Кейсы — конструктор</h2>${isAdmin()?`<button class="act primary" id="case-create-new">+ Создать кейс</button>`:''}</div>
-        <div class="block-body"><p class="muted" style="margin:0">Кейсы хранятся в <code>custom_cases</code> таблице (SQLite/Postgres), а не в JSON файле — безопасно. Поддерживается PNG превью, скидки, лимиты по времени/кол-ву/уровню, once. EV считается автоматически.</p></div>
-        <div class="table-scroll"><table>
-          <thead><tr><th>Кейс</th><th class="num">Цена / EV</th><th>Статус</th><th class="num">Открытий / Сборы</th><th></th></tr></thead>
-          <tbody>${cases || '<tr><td colspan=5 class="empty-row">Кейсов нет</td></tr>'}</tbody>
-        </table></div>
-      </div>
-      <div class="block">
-        <h2>Лента дропов</h2>
-        <div class="table-scroll"><table>
-          <thead><tr><th>Игрок</th><th>Предмет</th><th class="num">Цена</th><th>Источник</th><th>Дата</th><th></th></tr></thead>
-          <tbody>${drops}</tbody>
-        </table></div>
-      </div>
-      ${builder}${casePreviewModal()}`;
+    const totalOpened=state.cases.reduce((sum,item)=>sum+Number(item.opened||0),0),totalRevenue=state.cases.reduce((sum,item)=>sum+Number(item.revenueCents||0),0),enabledCount=state.cases.filter(item=>item.enabled).length;
+    const cases=state.cases.map(item=>{const ev=Number(item.evCents||0),profit=Number(item.profitCents||0),roi=item.priceCents?Math.round(profit/item.priceCents*100):0;return `<article class="admin-case-card ${item.enabled?'enabled':'disabled'}"><div class="admin-case-cover">${item.image?`<img src="${esc(item.image)}" alt="">`:'<div class="admin-case-placeholder">CASE</div>'}<span class="case-state">${item.enabled?'Активен':'Выключен'}</span></div><div class="admin-case-copy"><div><h3>${esc(item.name)}</h3><code>${esc(item.id)}</code></div><p>${esc(item.description||'Описание не указано')}</p><div class="admin-case-metrics"><span><small>Цена</small><b>${money(item.priceCents)}</b></span><span><small>EV</small><b>${money(ev)}</b></span><span class="${profit>=0?'pos':'neg'}"><small>ROI</small><b>${roi}%</b></span><span><small>Открытий</small><b>${num(item.opened||0)}</b></span></div></div>${isAdmin()?`<footer><button class="case-card-btn primary" data-editcase="${esc(item.id)}">Редактировать</button><button class="case-card-btn" data-previewcase="${esc(item.id)}">Предпросмотр</button><button class="case-card-btn ${item.enabled?'warning':'success'}" data-togglecase="${esc(item.id)}" data-enabled="${item.enabled?1:0}">${item.enabled?'Выключить':'Включить'}</button><button class="case-card-btn danger" data-delcase="${esc(item.id)}">Удалить</button></footer>`:''}</article>`}).join('');
+    const drops=state.drops.map(drop=>`<div class="admin-drop-row"><div class="admin-drop-user"><b>${esc(drop.userName)}</b><small>${when(drop.createdAt)}</small></div><div class="admin-drop-item"><strong>${esc(drop.itemName)}</strong><span>${esc(drop.source)}</span></div><b class="admin-drop-price">${money(drop.priceCents)}</b>${isAdmin()?`<button class="case-card-btn danger" data-deldrop="${drop.id}">Удалить</button>`:''}</div>`).join('')||'<div class="case-builder-empty">Дропов пока нет</div>';
+    return `<section class="cases-admin"><header class="cases-admin-hero"><div><span>УПРАВЛЕНИЕ КОНТЕНТОМ</span><h2>Кейсы</h2><p>Настраивайте внешний вид, стоимость, ограничения и содержимое кейсов.</p></div>${isAdmin()?'<button class="cases-create-btn" id="case-create-new">+ Создать новый кейс</button>':''}</header><div class="cases-summary"><article><span>Всего кейсов</span><b>${state.cases.length}</b></article><article><span>Активных</span><b>${enabledCount}</b></article><article><span>Открытий</span><b>${num(totalOpened)}</b></article><article><span>Сборы</span><b>${money(totalRevenue)}</b></article></div><div class="admin-cases-grid">${cases||'<div class="case-builder-empty">Кейсов нет</div>'}</div><section class="admin-drops-panel"><header><div><h2>Последние дропы</h2><p>История выпадений из кейсов и успешных апгрейдов.</p></div><b>${state.drops.length}</b></header><div class="admin-drops-list">${drops}</div></section>${state.editingCase?caseBuilderModal():''}${casePreviewModal()}</section>`;
   }
 
   function casePreviewModal() {
@@ -570,78 +526,16 @@
   }
 
   function caseBuilderModal() {
-    const c = state.editingCase;
-    c.contents = normalizeCaseContents(c.contents);
-    const isNew = !state.cases.some(item => item.id === c.id);
-    const totalW = c.contents.reduce((sum, [, weight]) => sum + Number(weight || 0), 0) || 1;
-    const ev = calcEV(c.contents);
-    const profit = Number(c.priceCents || 0) - ev;
-    const roi = c.priceCents ? Math.round(profit / c.priceCents * 100) : 0;
-    const validationErrors=[];if(!String(c.id||'').trim())validationErrors.push('Укажите ID кейса');if(!String(c.name||'').trim())validationErrors.push('Укажите название');if(!c.contents.length)validationErrors.push('Добавьте хотя бы один предмет');if(c.contents.some(([,weight])=>!Number.isFinite(Number(weight))||Number(weight)<=0))validationErrors.push('Все веса должны быть больше нуля');
-    const catalogFiltered = state.catalog.filter(item => {
-      if (!state.caseBuilderSearch) return true;
-      const query = state.caseBuilderSearch.toLowerCase();
-      return item.name.toLowerCase().includes(query) || item.catalogId.toLowerCase().includes(query);
-    }).slice(0, 100);
-    const selectedItems = c.contents.map(([catalogId, weight], index) => {
-      const item = state.catalog.find(entry => entry.catalogId === catalogId);
-      const chance = totalW > 0 ? Number(weight || 0) / totalW * 100 : 0;
-      return `<div class="case-selected-item">
-        <div class="case-item-image">${item?.icon ? `<img src="${esc(item.icon)}" alt="">` : '<span>?</span>'}</div>
-        <div class="case-item-copy"><strong>${esc(item?.name || catalogId)}</strong><small>${esc(catalogId)}</small></div>
-        <label class="case-weight-field"><span>Вес</span><input data-cb-weight="${index}" type="number" min="0.01" max="10000" step="0.1" value="${Number(weight)}"></label>
-        <div class="case-chance"><b>${chance.toFixed(2)}%</b><small>${money(item?.priceCents || 0)}</small></div>
-        <button class="act case-item-action danger" data-cb-remove="${index}" title="Убрать предмет">×</button>
-      </div>`;
-    }).join('') || '<div class="case-builder-empty"><strong>В кейсе пока нет предметов</strong><span>Найдите предмет в каталоге ниже и нажмите «Добавить».</span></div>';
-    const catalogItems = catalogFiltered.map(item => `<div class="case-catalog-item">
-      <div class="case-item-image">${item.icon ? `<img src="${esc(item.icon)}" alt="">` : '<span>?</span>'}</div>
-      <div class="case-item-copy"><strong>${esc(item.name)}</strong><small>${esc(item.catalogId)} · ${money(item.priceCents)}</small></div>
-      <button class="act case-catalog-add" data-cb-add="${esc(item.catalogId)}">Добавить</button>
-    </div>`).join('') || '<div class="case-builder-empty"><strong>Ничего не найдено</strong><span>Измените поисковый запрос.</span></div>';
-    return `<div class="case-builder" id="case-builder">
-      <section class="case-builder-card" role="dialog" aria-modal="true" aria-label="${isNew ? 'Создание кейса' : 'Редактирование кейса'}">
-        <header class="case-builder-header">
-          <div><span>${isNew ? 'НОВЫЙ КЕЙС' : 'РЕДАКТОР КЕЙСА'}</span><h2>${isNew ? 'Создание нового кейса' : esc(c.name || c.id)}</h2><p>${isNew ? 'Заполните основные данные и добавьте предметы.' : `ID: ${esc(c.id)}`}</p></div>
-          <button class="case-builder-close" id="case-builder-close" aria-label="Закрыть">×</button>
-        </header>
-        <div class="case-builder-summary">
-          <div><span>Цена</span><b>${money(c.priceCents || 0)}</b></div>
-          <div><span>Средняя выдача (EV)</span><b>${money(ev)}</b></div>
-          <div class="${profit >= 0 ? 'positive' : 'negative'}"><span>Ожидаемый профит</span><b>${money(profit)}</b></div>
-          <div class="${roi >= 0 ? 'positive' : 'negative'}"><span>ROI</span><b>${roi}%</b></div>
-          <div><span>Предметов</span><b>${c.contents.length}</b></div>
-          <div><span>Сумма весов</span><b>${totalW.toFixed(2)}</b></div>
-        </div>
-        <div class="case-validation ${validationErrors.length?'has-errors':'ok'}"><b>${validationErrors.length?'Проверка не пройдена':'Кейс настроен корректно'}</b><span>${validationErrors.length?validationErrors.join(' · '):`Сумма весов: ${totalW.toFixed(2)} · все шансы рассчитаны автоматически`}</span></div>
-        <div class="case-builder-body">
-          <aside class="case-settings">
-            <section class="case-form-section"><header><b>1. Основная информация</b><span>Название и описание, которые увидит игрок.</span></header>
-              <div class="case-form-grid one"><label>ID кейса <small>Латиница, цифры, «-» и «_»</small><input id="cb-id" value="${esc(c.id)}" ${isNew ? '' : 'disabled'} placeholder="neon-case"></label>
-              <label>Название <small>Короткое и понятное название</small><input id="cb-name" value="${esc(c.name || '')}" placeholder="NEON CASE"></label>
-              <label>Описание <small>Что пользователь может получить</small><textarea id="cb-desc" rows="3" placeholder="Описание кейса">${esc(c.description || '')}</textarea></label></div>
-            </section>
-            <section class="case-form-section"><header><b>2. Цена и доступность</b><span>Стоимость, скидка и состояние кейса.</span></header>
-              <div class="case-form-grid two"><label>Базовая цена, ₽<input id="cb-price" type="number" min="0" step="0.01" value="${(Number(c.priceCents || 0) / 100).toFixed(2)}"></label><label>Скидка, %<input id="cb-discount" type="number" min="0" max="90" value="${Number(c.discount_percent || c.discountPercent || 0)}"></label></div>
-              <div class="case-switches"><label><input id="cb-enabled" type="checkbox" ${c.enabled ? 'checked' : ''}><span><b>Кейс включён</b><small>Доступен игрокам на сайте</small></span></label><label><input id="cb-once" type="checkbox" ${c.once ? 'checked' : ''}><span><b>Один раз</b><small>Каждый игрок сможет открыть только один раз</small></span></label></div>
-            </section>
-            <section class="case-form-section"><header><b>3. Ограничения</b><span>Оставьте 0 или пустое поле, если ограничение не нужно.</span></header>
-              <div class="case-form-grid two"><label>Максимум открытий<input id="cb-max" type="number" min="0" value="${Number(c.max_openings || c.maxOpenings || 0)}"></label><label>Минимальный уровень<input id="cb-level" type="number" min="0" value="${Number(c.level_min || c.levelMin || 0)}"></label><label>Начало показа <small>Timestamp, необязательно</small><input id="cb-start" type="number" value="${c.starts_at || c.startsAt || ''}" placeholder="Без ограничения"></label><label>Конец показа <small>Timestamp, необязательно</small><input id="cb-end" type="number" value="${c.ends_at || c.endsAt || ''}" placeholder="Без ограничения"></label></div>
-            </section>
-            <section class="case-form-section"><header><b>4. Обложка кейса</b><span>PNG, JPG, WEBP или SVG до 4 МБ.</span></header>
-              <label>URL изображения<input id="cb-image" value="${esc(c.image || '')}" placeholder="/static/cases/my-case.png"></label>
-              <div class="case-upload-row"><input type="file" id="cb-file" accept=".png,.jpg,.jpeg,.webp,.svg"><button class="act case-action" id="cb-upload">Загрузить файл</button></div>
-              ${c.image ? `<div class="case-cover-preview"><img src="${esc(c.image)}" alt=""><span>Текущая обложка</span></div>` : ''}
-            </section>
-          </aside>
-          <main class="case-items-editor">
-            <section class="case-items-section"><header><div><b>5. Содержимое кейса</b><span>Вес определяет относительный шанс выпадения.</span></div><em>${c.contents.length} предметов</em></header><div class="case-selected-list">${selectedItems}</div></section>
-            <section class="case-items-section case-catalog-section"><header><div><b>6. Каталог предметов</b><span>Добавьте нужные предметы в кейс.</span></div></header><div class="case-catalog-search"><input id="cb-search" placeholder="Поиск по названию или ID" value="${esc(state.caseBuilderSearch)}"><span>Показано ${catalogFiltered.length}</span></div><div class="case-catalog-list">${catalogItems}</div></section>
-          </main>
-        </div>
-        <footer class="case-builder-footer"><button class="act" id="case-builder-preview">Предпросмотр</button><button class="act case-footer-cancel" id="case-builder-cancel">Отмена</button><button class="act primary case-footer-save" id="case-builder-save">${isNew ? 'Создать кейс' : 'Сохранить изменения'}</button></footer>
-      </section>
-    </div>`;
+    const c=state.editingCase;c.contents=normalizeCaseContents(c.contents);const isNew=!state.cases.some(item=>item.id===c.id),totalW=c.contents.reduce((sum,[,weight])=>sum+Number(weight||0),0)||1,ev=calcEV(c.contents),profit=Number(c.priceCents||0)-ev,roi=c.priceCents?Math.round(profit/c.priceCents*100):0;
+    const errors=[];if(!String(c.id||'').trim())errors.push('Укажите ID');if(!String(c.name||'').trim())errors.push('Укажите название');if(!c.contents.length)errors.push('Добавьте предметы');if(c.contents.some(([,w])=>!Number.isFinite(Number(w))||Number(w)<=0))errors.push('Исправьте веса');
+    const filtered=state.catalog.filter(item=>{if(!state.caseBuilderSearch)return true;const q=state.caseBuilderSearch.toLowerCase();return item.name.toLowerCase().includes(q)||item.catalogId.toLowerCase().includes(q)}),pageSize=72,pageCount=Math.max(1,Math.ceil(filtered.length/pageSize));state.caseCatalogPage=Math.min(pageCount,Math.max(1,state.caseCatalogPage));const pageItems=filtered.slice((state.caseCatalogPage-1)*pageSize,state.caseCatalogPage*pageSize);
+    const selected=c.contents.map(([id,weight],index)=>{const item=state.catalog.find(entry=>entry.catalogId===id),chance=Number(weight)/totalW*100;return `<div class="case-selected-card"><div class="case-selected-art">${item?.icon?`<img src="${esc(item.icon)}" alt="">`:'?'}</div><div class="case-selected-copy"><strong>${esc(item?.name||id)}</strong><small>${money(item?.priceCents||0)}</small></div><label><span>Вес</span><input data-cb-weight="${index}" type="number" min="0.01" step="0.1" value="${Number(weight)}"></label><div class="case-selected-chance"><b>${chance.toFixed(2)}%</b><span>шанс</span></div><button data-cb-remove="${index}" class="case-remove-btn">×</button></div>`}).join('')||'<div class="case-editor-empty"><b>Содержимое пустое</b><span>Откройте вкладку «Каталог» и добавьте предметы.</span></div>';
+    const catalog=pageItems.map(item=>`<article class="case-catalog-card"><div>${item.icon?`<img src="${esc(item.icon)}" alt="">`:''}</div><strong>${esc(item.name)}</strong><small>${money(item.priceCents)} · ${esc(item.rarity||'')}</small><button data-cb-add="${esc(item.catalogId)}">Добавить</button></article>`).join('')||'<div class="case-editor-empty"><b>Ничего не найдено</b><span>Попробуйте другой поисковый запрос.</span></div>';
+    const settings=`<div class="case-settings-tab"><section><header><b>Основная информация</b><span>Название и описание для страницы кейса.</span></header><div class="case-form-grid one"><label>ID кейса<small>Латиница, цифры, - и _</small><input id="cb-id" value="${esc(c.id)}" ${isNew?'':'disabled'} placeholder="neon-case"></label><label>Название<input id="cb-name" value="${esc(c.name||'')}" placeholder="NEON CASE"></label><label>Описание<textarea id="cb-desc" rows="4" placeholder="Краткое описание">${esc(c.description||'')}</textarea></label></div></section><section><header><b>Цена и доступность</b><span>Финальная стоимость рассчитывается с учётом скидки.</span></header><div class="case-form-grid two"><label>Цена, ₽<input id="cb-price" type="number" min="0" step="0.01" value="${(Number(c.priceCents||0)/100).toFixed(2)}"></label><label>Скидка, %<input id="cb-discount" type="number" min="0" max="90" value="${Number(c.discount_percent||c.discountPercent||0)}"></label></div><div class="case-switches"><label><input id="cb-enabled" type="checkbox" ${c.enabled?'checked':''}><span><b>Кейс включён</b><small>Показывать игрокам</small></span></label><label><input id="cb-once" type="checkbox" ${c.once?'checked':''}><span><b>Одно открытие</b><small>Один раз на игрока</small></span></label></div></section><section><header><b>Ограничения</b><span>Нулевое значение отключает ограничение.</span></header><div class="case-form-grid two"><label>Максимум открытий<input id="cb-max" type="number" min="0" value="${Number(c.max_openings||c.maxOpenings||0)}"></label><label>Минимальный уровень<input id="cb-level" type="number" min="0" value="${Number(c.level_min||c.levelMin||0)}"></label><label>Дата начала (timestamp)<input id="cb-start" type="number" value="${c.starts_at||c.startsAt||''}" placeholder="Не ограничено"></label><label>Дата окончания (timestamp)<input id="cb-end" type="number" value="${c.ends_at||c.endsAt||''}" placeholder="Не ограничено"></label></div></section><section><header><b>Обложка</b><span>PNG, JPG, WEBP или SVG до 4 МБ.</span></header><label>URL изображения<input id="cb-image" value="${esc(c.image||'')}" placeholder="/static/cases/case.png"></label><div class="case-upload-row"><input type="file" id="cb-file" accept=".png,.jpg,.jpeg,.webp,.svg"><button class="case-editor-action" id="cb-upload">Загрузить</button></div>${c.image?`<div class="case-cover-preview"><img src="${esc(c.image)}" alt=""><span>Текущая обложка</span></div>`:''}</section></div>`;
+    const contents=`<div class="case-content-tab"><header><div><h3>Предметы в кейсе</h3><p>Изменяйте вес — процент шанса пересчитается автоматически.</p></div><b>${c.contents.length}</b></header><div class="case-selected-grid">${selected}</div></div>`;
+    const catalogTab=`<div class="case-catalog-tab"><header><div><h3>Каталог скинов</h3><p>Доступно ${filtered.length} из ${state.catalog.length} предметов.</p></div><div class="case-catalog-search"><input id="cb-search" value="${esc(state.caseBuilderSearch)}" placeholder="Поиск по названию или ID"><span>${filtered.length} результатов</span></div></header><div class="case-catalog-grid">${catalog}</div><footer class="case-catalog-pager"><button data-case-page="${state.caseCatalogPage-1}" ${state.caseCatalogPage<=1?'disabled':''}>← Назад</button><span>Страница ${state.caseCatalogPage} из ${pageCount}</span><button data-case-page="${state.caseCatalogPage+1}" ${state.caseCatalogPage>=pageCount?'disabled':''}>Вперёд →</button></footer></div>`;
+    const body=state.caseBuilderTab==='settings'?settings:state.caseBuilderTab==='contents'?contents:catalogTab;
+    return `<div class="case-builder" id="case-builder"><section class="case-builder-card"><header class="case-builder-header"><div><span>${isNew?'СОЗДАНИЕ КЕЙСА':'РЕДАКТИРОВАНИЕ'}</span><h2>${esc(c.name||'Новый кейс')}</h2><p>${isNew?'Заполните настройки, добавьте предметы и проверьте результат.':`ID: ${esc(c.id)}`}</p></div><button class="case-builder-close" id="case-builder-close">×</button></header><div class="case-builder-summary"><div><span>Цена</span><b>${money(c.priceCents||0)}</b></div><div><span>EV</span><b>${money(ev)}</b></div><div class="${profit>=0?'positive':'negative'}"><span>Профит</span><b>${money(profit)}</b></div><div><span>ROI</span><b>${roi}%</b></div><div><span>Предметов</span><b>${c.contents.length}</b></div></div><nav class="case-editor-tabs"><button data-case-tab="settings" class="${state.caseBuilderTab==='settings'?'active':''}"><b>1</b><span>Настройки<small>Данные и ограничения</small></span></button><button data-case-tab="contents" class="${state.caseBuilderTab==='contents'?'active':''}"><b>2</b><span>Содержимое<small>${c.contents.length} предметов</small></span></button><button data-case-tab="catalog" class="${state.caseBuilderTab==='catalog'?'active':''}"><b>3</b><span>Каталог<small>${state.catalog.length} скинов</small></span></button></nav><div class="case-validation ${errors.length?'has-errors':'ok'}"><b>${errors.length?'Нужно исправить':'Кейс готов'}</b><span>${errors.length?errors.join(' · '):`Сумма весов ${totalW.toFixed(2)} · шансы рассчитаны`}</span></div><div class="case-editor-content">${body}</div><footer class="case-builder-footer"><button class="case-editor-action" id="case-builder-preview">Предпросмотр</button><div></div><button class="case-editor-action secondary" id="case-builder-cancel">Отмена</button><button class="case-editor-action primary" id="case-builder-save">${isNew?'Создать кейс':'Сохранить'}</button></footer></section></div>`;
   }
 
   function coefficientsView() {
@@ -819,7 +713,7 @@
           <small>${esc(thread.user.email || 'email не указан')}</small>
         </div>
         <span class="ticket-status ${TICKET_STATUS[thread.ticket?.status]?.className || 'ticket-open'}" data-ticket-context="${thread.user.id}" title="Нажмите правой кнопкой мыши, чтобы изменить статус">${TICKET_STATUS[thread.ticket?.status]?.label || 'Открыт'}</span>
-        <button class="act small" data-openuser="${thread.user.id}">Профиль</button>
+        <button class="act small" data-openuser="${thread.user.id}">Управление</button><a class="act small" href="/profile/${thread.user.id}" target="_blank">Профиль на сайте</a>
       </header>
       ${thread.typingStaff?`<div class="staff-typing"><i></i>${esc(thread.typingStaff)} печатает ответ…</div>`:''}
       <details class="ticket-history"><summary>История тикета · ${(thread.history||[]).length}</summary><div>${(thread.history||[]).map(row=>`<p><time>${shortTime(row.createdAt)}</time><b>${esc(row.staffName)}</b><span>${esc({status:'Статус',category:'Категория',priority:'Приоритет',reply:'Ответ',message:'Сообщение'}[row.event]||row.event)}: ${esc(row.oldValue)}${row.oldValue?' → ':''}${esc(row.newValue)}</span></p>`).join('')||'<p>История пуста</p>'}</div></details>
@@ -992,7 +886,7 @@
         const c = state.cases.find(x=>x.id===id);
         if (!c) return;
         state.editingCase = { ...c, contents: normalizeCaseContents(c.contents) };
-        state.caseBuilderSearch = '';
+        state.caseBuilderSearch = ''; state.caseBuilderTab='settings'; state.caseCatalogPage=1;
         render();
       });
     });
@@ -1010,7 +904,7 @@
     if (newBtn) newBtn.addEventListener('click', () => {
       if (!guardAdmin()) return;
       state.editingCase = { id: '', name: '', description: '', priceCents: 0, once: 0, enabled: 1, image: '', max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0, contents: [] };
-      state.caseBuilderSearch = '';
+      state.caseBuilderSearch = ''; state.caseBuilderTab='settings'; state.caseCatalogPage=1;
       render();
     });
 
@@ -1018,20 +912,13 @@
     if (builder) {
       const close = () => { state.editingCase = null; render(); };
       const captureCaseForm = () => {
-        const c = state.editingCase;
-        if (!c) return;
-        c.id = (builder.querySelector('#cb-id')?.value || c.id || '').trim();
-        c.name = (builder.querySelector('#cb-name')?.value || '').trim();
-        c.description = (builder.querySelector('#cb-desc')?.value || '').trim();
-        c.priceCents = Math.round(Number(builder.querySelector('#cb-price')?.value || 0) * 100);
-        c.discount_percent = Math.round(Number(builder.querySelector('#cb-discount')?.value || 0));
-        c.max_openings = Math.round(Number(builder.querySelector('#cb-max')?.value || 0));
-        c.level_min = Math.round(Number(builder.querySelector('#cb-level')?.value || 0));
-        c.starts_at = builder.querySelector('#cb-start')?.value ? Number(builder.querySelector('#cb-start').value) : null;
-        c.ends_at = builder.querySelector('#cb-end')?.value ? Number(builder.querySelector('#cb-end').value) : null;
-        c.once = builder.querySelector('#cb-once')?.checked ? 1 : 0;
-        c.enabled = builder.querySelector('#cb-enabled')?.checked ? 1 : 0;
-        c.image = (builder.querySelector('#cb-image')?.value || '').trim();
+        const c = state.editingCase;if (!c) return;
+        const setText=(selector,key)=>{const field=builder.querySelector(selector);if(field)c[key]=field.value.trim();};
+        const setNumber=(selector,key,multiplier=1)=>{const field=builder.querySelector(selector);if(field)c[key]=Math.round(Number(field.value||0)*multiplier);};
+        setText('#cb-id','id');setText('#cb-name','name');setText('#cb-desc','description');setText('#cb-image','image');
+        setNumber('#cb-price','priceCents',100);setNumber('#cb-discount','discount_percent');setNumber('#cb-max','max_openings');setNumber('#cb-level','level_min');
+        const start=builder.querySelector('#cb-start'),end=builder.querySelector('#cb-end'),once=builder.querySelector('#cb-once'),enabled=builder.querySelector('#cb-enabled');
+        if(start)c.starts_at=start.value?Number(start.value):null;if(end)c.ends_at=end.value?Number(end.value):null;if(once)c.once=once.checked?1:0;if(enabled)c.enabled=enabled.checked?1:0;
       };
       const rerenderBuilder = focusSelector => {
         captureCaseForm();
@@ -1044,8 +931,10 @@
       builder.querySelector('#case-builder-close')?.addEventListener('click', close);
       builder.querySelector('#case-builder-cancel')?.addEventListener('click', close);
       builder.addEventListener('click', e => { if (e.target.id==='case-builder') close(); });
+      builder.querySelectorAll('[data-case-tab]').forEach(button=>button.addEventListener('click',()=>{captureCaseForm();state.caseBuilderTab=button.dataset.caseTab;if(state.caseBuilderTab==='catalog')state.caseCatalogPage=1;render();}));
+      builder.querySelectorAll('[data-case-page]').forEach(button=>button.addEventListener('click',()=>{captureCaseForm();state.caseCatalogPage=Math.max(1,Number(button.dataset.casePage)||1);render();}));
       const search = builder.querySelector('#cb-search');
-      if (search) search.addEventListener('input', () => { state.caseBuilderSearch = search.value; rerenderBuilder('#cb-search'); });
+      if (search) search.addEventListener('input', () => { state.caseBuilderSearch = search.value; state.caseCatalogPage=1; rerenderBuilder('#cb-search'); });
       builder.querySelectorAll('[data-cb-add]').forEach(btn => {
         btn.addEventListener('click', () => {
           const cid = btn.dataset.cbAdd;
@@ -1077,34 +966,9 @@
       const save = builder.querySelector('#case-builder-save');
       if (save) save.addEventListener('click', async () => {
         if (!guardAdmin()) return;
-        const idEl = builder.querySelector('#cb-id');
-        const nameEl = builder.querySelector('#cb-name');
-        const descEl = builder.querySelector('#cb-desc');
-        const priceEl = builder.querySelector('#cb-price');
-        const discEl = builder.querySelector('#cb-discount');
-        const maxEl = builder.querySelector('#cb-max');
-        const levelEl = builder.querySelector('#cb-level');
-        const startEl = builder.querySelector('#cb-start');
-        const endEl = builder.querySelector('#cb-end');
-        const onceEl = builder.querySelector('#cb-once');
-        const enabledEl = builder.querySelector('#cb-enabled');
-        const imageEl = builder.querySelector('#cb-image');
-        const isNew = !state.cases.some(x=>x.id===state.editingCase.id) || !idEl.disabled;
-        const payload = {
-          id: (idEl.value||'').trim(),
-          name: (nameEl.value||'').trim(),
-          description: (descEl.value||'').trim(),
-          priceCents: Math.round(Number(priceEl.value||0)*100),
-          discount_percent: Math.round(Number(discEl.value||0)),
-          max_openings: Math.round(Number(maxEl.value||0)),
-          level_min: Math.round(Number(levelEl.value||0)),
-          starts_at: startEl.value ? Number(startEl.value) : null,
-          ends_at: endEl.value ? Number(endEl.value) : null,
-          once: onceEl.checked ? 1 : 0,
-          enabled: enabledEl.checked ? 1 : 0,
-          image: (imageEl.value||'').trim(),
-          contents: state.editingCase.contents
-        };
+        captureCaseForm();
+        const isNew = !state.cases.some(item=>item.id===state.editingCase.id);
+        const payload = { ...state.editingCase, contents: normalizeCaseContents(state.editingCase.contents) };
         try {
           if (isNew) {
             await api('/api/admin/cases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -1497,7 +1361,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ amountCents: Math.round(rubles * 100), note })
-        }), 'Баланс изменён', async () => { await openUser(id); loadUsers(); });
+        }), 'Баланс изменён', () => refreshUserAndList(id));
       });
     }
 
@@ -1507,7 +1371,7 @@
         const role = (view.querySelector('#role-select') || {}).value;
         await run(() => api(`/api/admin/users/${id}/role`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role })
-        }), 'Роль обновлена', async () => { await openUser(id); loadUsers(); });
+        }), 'Роль обновлена', () => refreshUserAndList(id));
       });
     }
 
@@ -1517,7 +1381,7 @@
         const value = Number((view.querySelector('#luck-value') || {}).value || 0);
         await run(() => api(`/api/admin/users/${id}/luck`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ luckModifier: value })
-        }), 'Модификатор сохранён', async () => { await openUser(id); loadUsers(); });
+        }), 'Модификатор сохранён', () => refreshUserAndList(id));
       });
     }
 
@@ -1528,12 +1392,12 @@
         if (!catalogId) return toast('Укажите catalogId', 'err');
         await run(() => api(`/api/admin/users/${id}/give`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catalogId })
-        }), 'Предмет выдан', () => openUser(id));
+        }), 'Предмет выдан', () => refreshUserAndList(id));
       });
     }
 
-    const tagsSave=view.querySelector('#tags-save');if(tagsSave)tagsSave.addEventListener('click',()=>{const tags=[...view.querySelectorAll('[data-user-tag]:checked')].map(input=>input.dataset.userTag);run(()=>api(`/api/admin/users/${id}/tags`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags})}),'Метки сохранены',async()=>{await openUser(id);loadUsers();});});
-    const freezeToggle=view.querySelector('#freeze-toggle');if(freezeToggle)freezeToggle.addEventListener('click',()=>{const frozen=!state.userDetail.user.frozen,reason=(view.querySelector('#freeze-reason')?.value||'').trim();run(()=>api(`/api/admin/users/${id}/freeze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen,reason})}),frozen?'Аккаунт заморожен':'Заморозка снята',async()=>{await openUser(id);loadUsers();});});
+    const tagsSave=view.querySelector('#tags-save');if(tagsSave)tagsSave.addEventListener('click',()=>{const tags=[...view.querySelectorAll('[data-user-tag]:checked')].map(input=>input.dataset.userTag);run(()=>api(`/api/admin/users/${id}/tags`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags})}),'Метки сохранены',()=>refreshUserAndList(id));});
+    const freezeToggle=view.querySelector('#freeze-toggle');if(freezeToggle)freezeToggle.addEventListener('click',()=>{const frozen=!state.userDetail.user.frozen,reason=(view.querySelector('#freeze-reason')?.value||'').trim();run(()=>api(`/api/admin/users/${id}/freeze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen,reason})}),frozen?'Аккаунт заморожен':'Заморозка снята',()=>refreshUserAndList(id));});
 
     const banToggle = view.querySelector('#ban-toggle');
     if (banToggle) {
@@ -1542,7 +1406,7 @@
         const reason = ((view.querySelector('#ban-reason') || {}).value || '').trim();
         await run(() => api(`/api/admin/users/${id}/ban`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ banned, reason })
-        }), banned ? 'Пользователь заблокирован' : 'Блокировка снята', async () => { await openUser(id); loadUsers(); });
+        }), banned ? 'Пользователь заблокирован' : 'Блокировка снята', () => refreshUserAndList(id));
       });
     }
 
@@ -1552,7 +1416,7 @@
         const inventoryId = Number(btn.dataset.revoke);
         await run(() => api(`/api/admin/users/${id}/revoke`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inventoryId })
-        }), 'Предмет отозван', async () => { await openUser(id); loadUsers(); });
+        }), 'Предмет отозван', () => refreshUserAndList(id));
       });
     });
 
@@ -1597,6 +1461,12 @@
     state.userDetail = await api(`/api/admin/users/${id}`);
     render();
   }
+  async function refreshUserAndList(id) {
+    const [detail, users] = await Promise.all([api(`/api/admin/users/${id}`), api(`/api/admin/users?q=${encodeURIComponent(state.userQuery)}`)]);
+    state.userDetail = detail;
+    state.users = users.users;
+    render();
+  }
   async function loadTransactions() {
     const data = await api(`/api/admin/transactions?kind=${encodeURIComponent(state.txKind)}`);
     state.transactions = data.transactions;
@@ -1604,6 +1474,7 @@
     render();
   }
   async function loadCases() {
+    await loadCatalog();
     const [cases, drops] = await Promise.all([api('/api/admin/cases'), api('/api/admin/drops')]);
     state.cases = cases.cases;
     state.drops = drops.drops;
@@ -1681,7 +1552,7 @@
       if (tab === 'dashboard') await loadSummary();
       if (tab === 'users') { await loadCatalog(); await loadUsers(); }
       if (tab === 'transactions') await loadTransactions();
-      if (tab === 'cases') await loadCases();
+      if (tab === 'cases') { await loadCatalog(); await loadCases(); }
       if (tab === 'coefficients') await loadSummary();
       if (tab === 'bots') await loadBots();
       if (tab === 'promos') await loadPromos();

@@ -5,7 +5,7 @@ const S = {
   tab: 'inventory', from: null, to: null, chance: null, boost: 30, addBalance: 0, turbo: false, spinning: false,
   opening: null, activeCase: null, rouletteItems: [], caseResult: null, upgradeResult: null, caseReveal: false, pointerAngle: 0,
   authModal: false, ageAccepted: false, termsAccepted: false,
-  profile: null, profileTab: 'items', settingsOpen: false, settings: null,
+  profile: null, publicProfile: null, publicProfileLoading: false, publicProfileError: '', profileTab: 'items', settingsOpen: false, settings: null,
   paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0, paymentCurrency: 'RUB', currencyOpen: false,
   sellMode: false, sellSelected: new Set(), sortBy: 'new', sortOpen: false,
   targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
@@ -191,7 +191,8 @@ async function boot() {
       S.inventoryFeed = inventory.feed || inventory.items || [];
       S.profile = profile;
     }
-    render();
+    const profileMatch=location.pathname.match(/^\/profile\/(\d+)\/?$/);
+    if(profileMatch) await openPublicProfile(profileMatch[1],false); else render();
     listen();
     preloadArtwork();
   } catch (error) {
@@ -315,33 +316,20 @@ function header() {
 }
 
 function sideItem(item) {
-  const player = S.me?.user;
-  const avatar = player?.avatar
-    ? `<img src="${esc(player.avatar)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">`
-    : '<img src="/chunks/logo.svg" alt="">';
-  const gone = item.status && item.status !== 'active';
-  const badge = item.status === 'sold' ? 'ПРОДАНО' : item.status === 'used' ? 'В АПГРЕЙДЕ' : '';
-  return `<div class="side-item skin-item${gone ? ' side-item-gone' : ''}" ${rarityStyle(item)}>
-    ${badge ? `<span class="side-item-badge">${badge}</span>` : ''}
-    ${art(item)}
-    <div class="side-item-copy">
-      <div class="item-name-row">
-        <span class="item-name">${esc(item.weapon || item.name)}</span>
-        ${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}
-      </div>
-      <div class="item-skin">${esc(item.skin || item.marketName)}</div>
-      <div class="item-rarity">${esc(item.rarity)}</div>
-    </div>
-    <div class="side-player">${avatar}<span>${esc(player?.name || 'Игрок')}</span></div>
-    <i class="skin-rarity-line"></i>
+  const player = item.userId ? { id:item.userId, name:item.userName, avatar:item.userAvatar } : S.me?.user;
+  const avatar = player?.avatar ? `<img src="${esc(player.avatar)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/chunks/logo.svg'">` : '<img src="/chunks/logo.svg" alt="">';
+  const fullName=String(item.name||item.itemName||'');const [weapon,skin='']=fullName.split(' | ');
+  const normalized={...item,name:fullName,weapon:item.weapon||weapon,skin:item.skin||skin,icon:item.icon||item.itemIcon,priceCents:item.priceCents,rarityColor:item.rarityColor||'#83d8ff'};
+  const clickable=Number(player?.id)>0;
+  return `<div class="side-item skin-item${clickable?' profile-clickable':''}" ${rarityStyle(normalized)} ${clickable?`role="button" tabindex="0" onclick="openPublicProfile(${Number(player.id)})" onkeydown="if(event.key==='Enter')openPublicProfile(${Number(player.id)})" title="Открыть профиль ${esc(player.name||'игрока')}"`:''}>
+    ${art(normalized)}<div class="side-item-copy"><div class="item-name-row"><span class="item-name">${esc(normalized.weapon||fullName)}</span></div><div class="item-skin">${esc(normalized.skin)}</div><div class="item-rarity">${esc(normalized.rarity||'')}</div></div>
+    <div class="side-player">${avatar}<span>${esc(player?.name||'Игрок')}</span></div><i class="skin-rarity-line"></i>
   </div>`;
 }
 
 function sidebar() {
-  const feed = (S.inventoryFeed && S.inventoryFeed.length) ? S.inventoryFeed : S.inventory;
-  const items = S.tab === 'hot'
-    ? feed.filter(item => Number(item.rarityRank) >= 4)
-    : feed;
+  const feed = (S.drops && S.drops.length) ? S.drops : ((S.inventoryFeed && S.inventoryFeed.length) ? S.inventoryFeed : S.inventory);
+  const items = S.tab === 'hot' ? feed.filter(item => Number(item.rarityRank) >= 4) : feed;
   return `<aside class="sidebar">
     <div class="side-head">
       <div class="site-online">
@@ -738,6 +726,22 @@ function profilePage() {
     <div class="profile-content">${content}</div>
   </section>`;
 }
+function publicProfilePage(){
+  if(S.publicProfileLoading)return '<div class="public-profile-state"><span class="profile-loader"></span><b>Загружаем профиль…</b></div>';
+  if(S.publicProfileError)return `<div class="public-profile-state error"><b>Профиль недоступен</b><span>${esc(S.publicProfileError)}</span><button onclick="go('upgrade')">На главную</button></div>`;
+  const profile=S.publicProfile;if(!profile)return '<div class="public-profile-state">Профиль не выбран</div>';
+  const user=profile.user||{},avatar=avatarImage(user),tags=(user.tags||[]).map(tag=>`<span class="public-user-tag tag-${esc(tag)}">${esc({vip:'VIP',suspicious:'Подозрительный',verified:'Проверенный',partner:'Партнёр'}[tag]||tag)}</span>`).join('');
+  const best=profile.bestDrop?`<div class="profile-best-item"><div class="profile-best-copy"><strong>${esc(profile.bestDrop.name||'Лучший дроп')}</strong><span>${esc(profile.bestDrop.skin||'Лучший предмет в инвентаре')}</span><b>${coinPrice(profile.bestDrop.priceCents)}</b></div><div class="profile-best-art">${image(profile.bestDrop.icon,profile.bestDrop.name||'')}</div></div>`:'<div class="profile-best-empty"><span>У игрока пока нет предметов</span><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""></div>';
+  let content='';if(S.profileTab==='items'){const items=sortList(profile.items||[]);content=items.length?`<div class="profile-items-grid profile-public-items">${items.map(historyCard).join('')}</div>`:'<div class="profile-empty">У ИГРОКА НЕТ АКТИВНЫХ ПРЕДМЕТОВ</div>';}else if(S.profileTab==='history'){const rows=sortList(profile.history||[]);content=rows.length?`<div class="profile-items-grid profile-history-grid">${rows.map(historyCard).join('')}</div>`:'<div class="profile-empty">ИСТОРИЯ ПУСТА</div>';}else{const upgrades=profile.upgrades||[];content=upgrades.length?`<div class="profile-upgrades-grid">${upgrades.map(upgradeCard).join('')}</div>`:'<div class="profile-empty">ИСТОРИЯ АПГРЕЙДОВ ПУСТА</div>';}
+  return `<section class="profile-page public-profile-page"><button class="public-profile-back" onclick="history.back()">← Назад</button><div class="profile-summary-grid"><article class="profile-user-card"><div class="profile-identity">${avatar}<div><h1>${esc(user.name||'Игрок')}</h1><span>ID: ${esc(user.steamid||user.id||'')}</span>${roleBadge(user.role)}<div class="public-user-tags">${tags}</div></div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid||'')}" target="_blank" rel="noopener">${steamIcon()}</a></div></div><div class="public-profile-caption">Публичный профиль игрока</div><div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened||0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade||0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems||0}</b><span>Продажи</span></div></div></article><article class="profile-best-card"><h2>Лучший дроп</h2>${best}</article><div class="profile-side-column"><article class="profile-withdraw"><span class="withdrawn-label">Продано предметов</span><div class="withdrawn-amount"><b>${(Number(profile.withdrawnCents||0)/100).toFixed(2)}</b><img src="/chunks/coin.svg" alt=""></div><span class="withdrawn-count">${profile.activeItems||0} активных предметов</span><img class="withdrawn-bg" src="/chunks/steamBg.webp" alt=""></article><article class="public-profile-info"><span>Профиль создан</span><b>${user.createdAt?new Date(user.createdAt).toLocaleDateString('ru-RU'):'—'}</b></article></div></div><div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab==='items'?'active':''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab==='history'?'active':''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab==='upgrades'?'active':''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div><div class="profile-toolbar-right">${profileSortButton()}</div></div><div class="profile-content">${content}</div></section>`;
+}
+async function openPublicProfile(userId,push=true){
+  const id=Number(userId);if(!id)return;if(S.me?.authenticated&&Number(S.me.user.id)===id){history.replaceState({},'', '/');S.page='profile';render();return;}
+  S.page='public-profile';S.publicProfile=null;S.publicProfileError='';S.publicProfileLoading=true;S.profileTab='items';if(push)history.pushState({profileId:id},'',`/profile/${id}`);render();
+  try{S.publicProfile=await api(`/api/users/${id}/profile`);}catch(error){S.publicProfileError=error.message;}finally{S.publicProfileLoading=false;render();}
+}
+window.addEventListener('popstate',()=>{const match=location.pathname.match(/^\/profile\/(\d+)\/?$/);if(match)openPublicProfile(match[1],false);else{S.page='upgrade';S.publicProfile=null;render();}});
+
 function siteFooter() {
   const stats = S.globalStats || {};
   const count = value => Number(value || 0).toLocaleString('ru-RU');
@@ -869,6 +873,7 @@ function pageContent() {
   if (S.page === 'cases') return casesPage();
   if (S.page === 'case') return caseDetailPage();
   if (S.page === 'profile' || S.page === 'inventory') return profilePage();
+  if (S.page === 'public-profile') return publicProfilePage();
   if (S.page === 'rewards') return rewardsPage();
   if (S.page === 'steal') return stealPage();
   return upgradePage();
@@ -1413,6 +1418,7 @@ async function sendChat(event) {
 }
 
 function go(page) {
+  if (S.page === 'public-profile' && page !== 'public-profile') history.pushState({}, '', '/');
   if (page === S.page) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   const current = document.querySelector('.page');
   current?.classList.add('page-leave');
@@ -1586,7 +1592,7 @@ Object.assign(window, {
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat, setTicketCategory,
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
-  closeUpgradeResult, closeCaseReveal, openInventory, acceptCookies, rejectCookies
+  closeUpgradeResult, closeCaseReveal, openInventory, openPublicProfile, acceptCookies, rejectCookies
 });
 function closeNotifications() {
   document.querySelector('[data-notifications-overlay]')?.remove();

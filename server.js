@@ -983,6 +983,7 @@ ensureColumn('live_drops', 'rarity', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('live_drops', 'rarity_color', "TEXT NOT NULL DEFAULT '#74ffca'");
 ensureColumn('live_drops', 'rarity_rank', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('live_drops', 'source', "TEXT NOT NULL DEFAULT 'case'");
+ensureColumn('live_drops', 'user_id', 'INTEGER');
 ensureColumn('users', 'trade_link', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'profile_privacy', "TEXT NOT NULL DEFAULT 'private'");
 ensureColumn('users', 'streamer_mode', 'INTEGER NOT NULL DEFAULT 0');
@@ -1594,7 +1595,9 @@ function pickWeighted(contents, account = null) {
 function dropPayload(row) {
   return {
     id: row.id,
+    userId: row.user_id == null ? null : Number(row.user_id),
     userName: row.user_name,
+    userAvatar: row.user_avatar || (row.user_id ? (db.prepare('SELECT avatar FROM users WHERE id=?').get(row.user_id)?.avatar || '') : ''),
     itemName: row.item_name,
     itemIcon: steamIconFor(row.item_name) || row.item_icon,
     localIcon: row.item_icon,
@@ -1606,13 +1609,13 @@ function dropPayload(row) {
     createdAt: row.created_at
   };
 }
-function addLiveDrop(userName, item, source, now = Date.now()) {
+function addLiveDrop(userId, userName, item, source, now = Date.now()) {
   cache.del('drops:latest');
   cache.del('stats:global');
   const result = db.prepare(`
-    INSERT INTO live_drops(user_name,item_name,item_icon,price_cents,rarity,rarity_color,rarity_rank,source,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?)
-  `).run(userName, item.name, item.icon, item.priceCents, item.rarity, item.rarityColor, item.rarityRank, source, now);
+    INSERT INTO live_drops(user_id,user_name,item_name,item_icon,price_cents,rarity,rarity_color,rarity_rank,source,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
+  `).run(userId || null, userName, item.name, item.icon, item.priceCents, item.rarity, item.rarityColor, item.rarityRank, source, now);
   return dropPayload(db.prepare('SELECT * FROM live_drops WHERE id = ?').get(result.lastInsertRowid));
 }
 function caseView(caseData, userId) {
@@ -1772,6 +1775,25 @@ app.get('/api/me', async (req, res) => {
     }
   });
 });
+app.get('/api/users/:id/profile', (req, res) => {
+  const userId = Number(req.params.id);
+  const user = db.prepare('SELECT * FROM users WHERE id=? AND banned=0').get(userId);
+  if (!user) return res.status(404).json({ error:'Профиль не найден' });
+  const viewer = currentUser(req);
+  const own = viewer && Number(viewer.id) === userId;
+  const staff = viewer && isStaff(viewer);
+  const privacy = user.profile_privacy || 'private';
+  const showSteamIdentity = own || staff || privacy === 'public';
+  const items = db.prepare(`SELECT id AS assetid,catalog_id AS catalogId,item_name AS name,weapon_name AS weapon,skin_name AS skin,item_icon AS icon,price_cents AS priceCents,rarity,rarity_color AS rarityColor,rarity_rank AS rarityRank,source,status,created_at AS createdAt FROM site_inventory WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 100`).all(userId).map(item=>withSteamIcon({...item,assetid:String(item.assetid)}));
+  const history = db.prepare(`SELECT id AS assetid,catalog_id AS catalogId,item_name AS name,weapon_name AS weapon,skin_name AS skin,item_icon AS icon,price_cents AS priceCents,rarity,rarity_color AS rarityColor,rarity_rank AS rarityRank,source,status,created_at AS createdAt FROM site_inventory WHERE user_id=? ORDER BY id DESC LIMIT 50`).all(userId).map(item=>withSteamIcon({...item,assetid:String(item.assetid)}));
+  const upgrades = db.prepare(`SELECT r.id,r.chance,r.won,r.target_catalog_id AS targetCatalogId,r.created_at AS createdAt,a.item_name AS fromName,a.item_icon AS fromIcon,a.price_cents AS fromPriceCents,t.item_name AS toName,t.item_icon AS toIcon,t.price_cents AS toPriceCents FROM upgrade_rounds r LEFT JOIN site_inventory a ON a.id=r.from_item_id LEFT JOIN site_inventory t ON t.id=r.result_item_id WHERE r.user_id=? ORDER BY r.id DESC LIMIT 40`).all(userId).map(row=>{const target=CATALOG_BY_ID.get(String(row.targetCatalogId||''));return {...row,won:!!row.won,toName:row.toName||target?.name||'',toIcon:row.toIcon||target?.icon||'',toPriceCents:row.toPriceCents??target?.priceCents??0};});
+  const bestDrop = history.slice().sort((a,b)=>Number(b.priceCents)-Number(a.priceCents))[0] || null;
+  const stats={casesOpened:db.prepare('SELECT COUNT(*) c FROM case_openings WHERE user_id=?').get(userId).c,upgradesMade:db.prepare('SELECT COUNT(*) c FROM upgrade_rounds WHERE user_id=?').get(userId).c,soldItems:db.prepare('SELECT COUNT(*) c FROM inventory_sales WHERE user_id=?').get(userId).c};
+  const withdrawnCents=db.prepare('SELECT COALESCE(SUM(amount_cents),0) s FROM inventory_sales WHERE user_id=?').get(userId).s;
+  let tags=[];try{tags=JSON.parse(user.tags||'[]')}catch{}
+  res.json({ user:{id:user.id,steamid:showSteamIdentity?user.steamid:'',name:user.name,avatar:showSteamIdentity?user.avatar:'',role:roleOf(user),tags,createdAt:user.created_at}, items,history,upgrades,bestDrop,stats,withdrawnCents,activeItems:items.length,privacy,isOwn:!!own,staffView:!!staff });
+});
+
 app.get('/api/profile', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
@@ -1952,7 +1974,7 @@ app.post('/api/cases/open', (req, res) => {
         const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
         recordTransaction(account.id, 'case_open', -casePrice, after, caseData.name, now);
       }
-      const drop = addLiveDrop(account.name, won, 'case', now);
+      const drop = addLiveDrop(account.id, account.name, won, 'case', now);
       const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
       return { won: { ...won, assetid: String(inventoryId) }, drop, balanceCents: balance };
     })();
@@ -2018,7 +2040,7 @@ app.post('/api/upgrade', (req, res) => {
       let drop = null;
       if (won) {
         resultItemId = insertInventoryItem(account.id, target, `upgrade:${fromId}`, now);
-        drop = addLiveDrop(account.name, target, 'upgrade', now);
+        drop = addLiveDrop(account.id, account.name, target, 'upgrade', now);
       }
       db.prepare(`
         INSERT INTO upgrade_rounds(user_id,from_item_id,target_catalog_id,chance,won,result_item_id,created_at)
@@ -2550,7 +2572,7 @@ app.post('/api/admin/bots/:id/drop', requireAdmin, (req, res) => {
     ? CATALOG_BY_ID.get(String(req.body.catalogId))
     : CATALOG[crypto.randomInt(0, CATALOG.length)];
   if (!item) return res.status(404).json({ error: 'Предмет не найден' });
-  const drop = addLiveDrop(bot.name, item, 'case');
+  const drop = addLiveDrop(bot.id, bot.name, item, 'case');
   broadcast('drop', drop);
   adminLog(req.account, 'bot_drop', bot.name, item.name);
   res.json({ ok: true, drop });
