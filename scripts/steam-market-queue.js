@@ -5,6 +5,10 @@ const path = require('path');
 const FRESH_TTL = 2 * 60 * 60 * 1000;
 const STALE_TTL = 30 * 24 * 60 * 60 * 1000;
 let MIN_INTERVAL = 400;
+let WORKER_LIMIT = 12;
+let PROXY_TIMEOUT = 4000;
+let MAX_PROXY_FAILURES = 3;
+let BLOCK_429_MS = 30 * 60 * 1000;
 const RETRY_AFTER_429 = 10 * 1000;
 const MAX_RETRY_429 = 60 * 1000;
 const CACHE_FILE = path.join(process.cwd(), 'data', 'steam-price-cache.json');
@@ -15,7 +19,9 @@ const nativeFetch = global.fetch;
 const cache = new Map();
 const queue = [];
 const queuedUrls = new Set();
-let running = false;
+let activeWorkers = 0;
+let validating = false;
+let validationSummary = { checked: 0, working: 0, rejected: 0, at: 0 };
 let lastRequestAt = 0;
 let dirty = false;
 let consecutive429 = 0;
@@ -102,7 +108,9 @@ function buildProxyPool() {
     lastAt: 0,
     fails: 0,
     blockedUntil: 0,
-    success: 0
+    success: 0,
+    busy: false,
+    lastError: ''
   }));
   if (proxyPool.length) console.log(`[steam-price-queue] Загружено прокси: ${proxyPool.length}`);
   else console.log(`[steam-price-queue] Прокси не найдены — работаем напрямую. Добавь в data/proxies.txt или PROXY_LIST env`);
@@ -110,22 +118,19 @@ function buildProxyPool() {
 buildProxyPool();
 
 function getNextProxy() {
-  if (!proxyPool.length) return null;
+  if (!proxyPool.length) return { proxy: null, wait: Math.max(0, MIN_INTERVAL - (Date.now() - lastRequestAt)), direct: true };
   const now = Date.now();
+  const available = proxyPool.filter(proxy => !proxy.busy);
+  if (!available.length) return { proxy: null, wait: 50, pending: true };
   let best = null;
-  let bestScore = Infinity;
-  for (const p of proxyPool) {
-    if (p.blockedUntil > now) continue;
-    const wait = (p.lastAt + MIN_INTERVAL) - now;
-    const score = Math.max(0, wait) + p.fails * 200;
-    if (score < bestScore) {
-      bestScore = score;
-      best = p;
-    }
+  let bestReadyAt = Infinity;
+  for (const proxy of available) {
+    const readyAt = Math.max(proxy.blockedUntil || 0, (proxy.lastAt || 0) + MIN_INTERVAL);
+    if (readyAt < bestReadyAt) { bestReadyAt = readyAt; best = proxy; }
   }
-  if (!best) return null;
-  const wait = (best.lastAt + MIN_INTERVAL) - Date.now();
-  return { proxy: best, wait: wait > 0 ? wait : 0 };
+  if (!best) return { proxy: null, wait: 100, pending: true };
+  best.busy = true;
+  return { proxy: best, wait: Math.max(0, bestReadyAt - now), direct: false };
 }
 
 function requestUrl(input) {
@@ -158,99 +163,195 @@ function enqueue(url, init, foreground = false, resolve = null, reject = null) {
   }
 }
 
-async function fetchViaProxy(url, init, proxyUrl) {
+async function fetchViaProxy(url, init, proxyUrl, timeoutMs = PROXY_TIMEOUT) {
   if (!proxyUrl) {
     lastRequestAt = Date.now();
-    return await nativeFetch(url, init);
+    return await nativeFetch(url, { ...init, signal: AbortSignal.timeout(Math.max(timeoutMs, 8000)) });
   }
+  const { ProxyAgent } = require('undici');
+  const agent = new ProxyAgent(proxyUrl);
+  return await nativeFetch(url, { ...init, dispatcher: agent, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+function normalizeProxyUrl(value) {
+  let url = String(value || '').trim();
+  if (!url) return '';
+  if (!url.includes('://')) url = 'http://' + url;
   try {
-    const { ProxyAgent } = require('undici');
-    const agent = new ProxyAgent(proxyUrl);
-    const res = await nativeFetch(url, { ...init, dispatcher: agent });
-    return res;
-  } catch (e) {
-    try {
-      const HttpsProxyAgent = require('https-proxy-agent');
-      const agentMod = HttpsProxyAgent.HttpsProxyAgent || HttpsProxyAgent;
-      const agent = new agentMod(proxyUrl);
-      const { fetch: fetchWithAgent } = require('undici');
-      return await nativeFetch(url, { ...init, dispatcher: agent });
-    } catch (_) {
-      return await nativeFetch(url, init);
-    }
+    const parsed = new URL(url);
+    if (!parsed.hostname || !parsed.port) return '';
+    return url;
+  } catch { return ''; }
+}
+
+async function probeProxy(url, timeoutMs = 4500) {
+  const testUrl = 'https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name=' + encodeURIComponent('AK-47 | Redline (Field-Tested)') + '&proxy_test=' + Date.now();
+  const started = Date.now();
+  try {
+    const response = await fetchViaProxy(testUrl, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }, url, timeoutMs);
+    if (response.status === 429) return { url, ok: false, status: 429, error: 'Steam rate limit', latency: Date.now() - started };
+    if (!response.ok) return { url, ok: false, status: response.status, error: `HTTP ${response.status}`, latency: Date.now() - started };
+    const data = await response.json().catch(() => null);
+    if (!data || data.success !== true) return { url, ok: false, status: response.status, error: 'Некорректный ответ Steam', latency: Date.now() - started };
+    return { url, ok: true, status: response.status, latency: Date.now() - started };
+  } catch (error) {
+    return { url, ok: false, status: 0, error: /abort|timeout/i.test(String(error.message)) ? 'Таймаут' : String(error.message || 'Ошибка соединения'), latency: Date.now() - started };
+  }
+}
+
+async function validateProxies(values, options = {}) {
+  if (validating) throw new Error('Проверка прокси уже выполняется, дождитесь завершения');
+  validating = true;
+  try {
+    const urls = [...new Set((values || []).map(normalizeProxyUrl).filter(Boolean))];
+    const results = new Array(urls.length);
+    let cursor = 0;
+    const concurrency = Math.min(24, Math.max(1, Number(options.concurrency || 16)));
+    const workers = Array.from({ length: Math.min(concurrency, urls.length) }, async () => {
+      while (cursor < urls.length) {
+        const index = cursor++;
+        results[index] = await probeProxy(urls[index], Number(options.timeoutMs || 4500));
+      }
+    });
+    await Promise.all(workers);
+    const working = results.filter(result => result && result.ok);
+    validationSummary = { checked: urls.length, working: working.length, rejected: urls.length - working.length, at: Date.now() };
+    return { ...validationSummary, workingUrls: working.map(result => result.url), results };
+  } finally {
+    validating = false;
+  }
+}
+
+function replaceProxyPool(urls) {
+  const previous = new Map(proxyPool.map(proxy => [proxy.url, proxy]));
+  proxyPool = [...new Set((urls || []).map(normalizeProxyUrl).filter(Boolean))].map(url => previous.get(url) || ({ url, lastAt: 0, fails: 0, blockedUntil: 0, success: 0, busy: false, lastError: '' }));
+  return proxyPool.length;
+}
+
+function applyValidationResults(results) {
+  const byUrl = new Map((results || []).filter(Boolean).map(result => [result.url, result]));
+  for (const proxy of proxyPool) {
+    const result = byUrl.get(proxy.url);
+    if (!result) continue;
+    proxy.lastLatency = Number(result.latency || 0);
+    if (result.ok) { proxy.success = Math.max(1, Number(proxy.success || 0)); proxy.fails = 0; proxy.blockedUntil = 0; proxy.lastError = ''; }
+    else { proxy.fails = Math.max(1, Number(proxy.fails || 0)); proxy.lastError = result.error || 'Проверка не пройдена'; }
+  }
+}
+
+function persistProxyPool() {
+  try {
+    fs.mkdirSync(path.dirname(PROXY_FILE_TXT), { recursive: true });
+    const plain = proxyPool.map(proxy => proxy.url.replace(/^https?:\/\//, ''));
+    fs.writeFileSync(PROXY_FILE_TXT, plain.join('\n') + (plain.length ? '\n' : ''));
+    fs.writeFileSync(PROXY_FILE_JSON, JSON.stringify(plain, null, 2));
+  } catch (error) {
+    console.warn('[steam-price-queue] Не удалось сохранить проверенные прокси:', error.message);
+  }
+}
+
+async function validateCurrentProxies(options = {}) {
+  const controller = global.__priceQueue;
+  const wasPaused = !!controller?.paused;
+  if (controller) controller.paused = true;
+  try {
+    const result = await validateProxies(proxyPool.map(proxy => proxy.url), options);
+    replaceProxyPool(result.workingUrls);
+    applyValidationResults(result.results);
+    if (options.persist !== false) persistProxyPool();
+    console.log(`[steam-price-queue] Проверка завершена: работают ${result.working}/${result.checked}, отклонено ${result.rejected}`);
+    return result;
+  } finally {
+    if (controller) { controller.paused = wasPaused; if (!wasPaused && queue.length) runQueue().catch(() => {}); }
   }
 }
 
 async function runQueue() {
-  if (running) return;
-  running = true;
-  try {
-    while (queue.length) {
-      if (global.__priceQueue && global.__priceQueue.paused) {
-        await sleep(1000);
-        continue;
-      }
-      const next = getNextProxy();
-      let proxyObj = null;
-      let wait = 0;
-      if (next) {
-        proxyObj = next.proxy;
-        wait = next.wait;
-      } else {
-        wait = MIN_INTERVAL - (Date.now() - lastRequestAt);
-      }
-      if (wait > 0) await sleep(wait);
+  const workerLimit = Math.min(WORKER_LIMIT, Math.max(1, proxyPool.length || 1));
+  while (activeWorkers < workerLimit && queue.length) {
+    activeWorkers++;
+    runWorker().catch(error => console.error('[steam-price-queue]', error)).finally(() => {
+      activeWorkers--;
+      if (queue.length) runQueue().catch(() => {});
+    });
+  }
+}
 
-      const task = queue.shift();
-      queuedUrls.delete(task.url);
-
-      let response;
-      try {
-        if (proxyObj) proxyObj.lastAt = Date.now();
-        else lastRequestAt = Date.now();
-        response = await fetchViaProxy(task.url, task.init, proxyObj ? proxyObj.url : null);
-      } catch (error) {
-        if (proxyObj) { proxyObj.fails++; if (proxyObj.fails > 3) proxyObj.blockedUntil = Date.now() + 60*1000; }
-        if (task.foreground && task.reject) task.reject(error);
-        if (!response) continue;
+async function runWorker() {
+  while (queue.length) {
+    if (global.__priceQueue && global.__priceQueue.paused) { await sleep(500); continue; }
+    const next = getNextProxy();
+    if (next.pending) { await sleep(next.wait || 50); continue; }
+    const proxyObj = next.proxy;
+    if (next.wait > 0) await sleep(next.wait);
+    const task = queue.shift();
+    if (!task) { if (proxyObj) proxyObj.busy = false; continue; }
+    queuedUrls.delete(task.url);
+    let response = null;
+    try {
+      if (proxyObj) proxyObj.lastAt = Date.now(); else lastRequestAt = Date.now();
+      response = await fetchViaProxy(task.url, task.init, proxyObj ? proxyObj.url : null);
+    } catch (error) {
+      if (proxyObj) {
+        proxyObj.fails++;
+        proxyObj.lastError = /abort|timeout/i.test(String(error.message)) ? 'Таймаут' : String(error.message || 'Ошибка соединения');
+        proxyObj.blockedUntil = Date.now() + Math.min(BLOCK_429_MS, 60_000 * Math.max(2, proxyObj.fails));
+        if (proxyObj.fails >= MAX_PROXY_FAILURES) { proxyPool = proxyPool.filter(item => item !== proxyObj); persistProxyPool(); }
       }
+      task.attempts = (task.attempts || 0) + 1;
+      const maxAttempts = proxyObj ? Math.min(6, Math.max(2, proxyPool.length)) : 1;
+      if (task.attempts < maxAttempts) {
+        queuedUrls.add(task.url); queue.push(task);
+      } else if (task.foreground && task.reject) task.reject(error);
+      if (proxyObj) proxyObj.busy = false;
+      continue;
+    }
 
-      if (response && response.status === 429) {
-        consecutive429++;
-        const backoff = Math.min(RETRY_AFTER_429 * Math.pow(1.5, consecutive429 - 1), MAX_RETRY_429);
-        console.warn(`[steam-price-queue] 429 via ${proxyObj ? proxyObj.url : 'direct'} — пауза ${Math.round(backoff/1000)}с`);
-        if (proxyObj) {
-          proxyObj.fails++;
-          proxyObj.blockedUntil = Date.now() + backoff;
-        }
-        queuedUrls.add(task.url);
-        task.attempts = (task.attempts || 0) + 1;
-        if (task.attempts < 10) queue.unshift(task);
-        else if (task.foreground && task.resolve) task.resolve(response);
-        await sleep(Math.min(backoff, 5000));
-        continue;
+    if (response.status === 429) {
+      consecutive429++;
+      if (proxyObj) {
+        proxyObj.fails++;
+        proxyObj.lastError = 'Steam: слишком много запросов (429)';
+        proxyObj.blockedUntil = Date.now() + BLOCK_429_MS;
+        if (proxyObj.fails >= MAX_PROXY_FAILURES) { proxyPool = proxyPool.filter(item => item !== proxyObj); persistProxyPool(); }
       }
+      task.attempts = (task.attempts || 0) + 1;
+      const maxAttempts = proxyObj ? Math.min(6, Math.max(2, proxyPool.length)) : 1;
+      if (task.attempts < maxAttempts) {
+        queuedUrls.add(task.url); queue.push(task);
+      } else if (task.foreground && task.resolve) task.resolve(response);
+      if (proxyObj) proxyObj.busy = false;
+      continue;
+    }
 
-      consecutive429 = 0;
-      if (proxyObj) { proxyObj.fails = Math.max(0, proxyObj.fails - 1); proxyObj.success++; }
-
-      if (response && response.ok) {
-        try {
-          const data = await response.clone().json();
-          cache.set(task.url, { at: Date.now(), data });
-          dirty = true;
-          if (cache.size % 20 === 0) saveDiskCache();
-          else if (task.foreground) saveDiskCache();
-          if (task.foreground && task.resolve) task.resolve(makeResponse(data, 'miss'));
-          continue;
-        } catch (_) {}
+    if (!response.ok) {
+      if (proxyObj) {
+        proxyObj.fails++;
+        proxyObj.lastError = `HTTP ${response.status}`;
+        proxyObj.blockedUntil = Date.now() + 5 * 60_000;
+        if (proxyObj.fails >= MAX_PROXY_FAILURES) { proxyPool = proxyPool.filter(item => item !== proxyObj); persistProxyPool(); }
       }
+      task.attempts = (task.attempts || 0) + 1;
+      if (proxyObj && task.attempts < 4) { queuedUrls.add(task.url); queue.push(task); }
+      else if (task.foreground && task.resolve) task.resolve(response);
+      if (proxyObj) proxyObj.busy = false;
+      continue;
+    }
+
+    consecutive429 = 0;
+    if (proxyObj) { proxyObj.fails = Math.max(0, proxyObj.fails - 1); proxyObj.success++; proxyObj.lastError = ''; }
+    try {
+      const data = await response.clone().json();
+      cache.set(task.url, { at: Date.now(), data });
+      dirty = true;
+      if (cache.size % 20 === 0 || task.foreground) saveDiskCache();
+      if (task.foreground && task.resolve) task.resolve(makeResponse(data, 'miss'));
+    } catch (error) {
       if (task.foreground && task.resolve) task.resolve(response);
     }
-    saveDiskCache();
-  } finally {
-    running = false;
+    if (proxyObj) proxyObj.busy = false;
   }
+  saveDiskCache();
 }
 
 global.fetch = function steamAwareFetch(input, init) {
@@ -269,14 +370,20 @@ global.__priceQueue = {
   pause() { this.paused = true; console.log('[steam-price-queue] PAUSED'); },
   resume() { this.paused = false; console.log('[steam-price-queue] RESUMED'); if (queue.length) runQueue().catch(()=>{}); },
   clear() { cache.clear(); dirty = true; saveDiskCache(); console.log('[steam-price-queue] CACHE CLEARED'); },
-  stats() { return { size: cache.size, queueLen: queue.length, paused: this.paused, proxies: proxyPool.length, proxyStats: proxyPool.map(p=>({url:p.url, fails:p.fails, success:p.success, blocked: p.blockedUntil>Date.now()})), consecutive429 }; },
+  stats() { return { config:{workers:WORKER_LIMIT,timeoutMs:PROXY_TIMEOUT,maxFailures:MAX_PROXY_FAILURES,block429Minutes:Math.round(BLOCK_429_MS/60000),minInterval:MIN_INTERVAL}, size: cache.size, queueLen: queue.length, activeWorkers, paused: this.paused, proxies: proxyPool.length, validating, validation: validationSummary, proxyStats: proxyPool.map(p=>({url:p.url, fails:p.fails, success:p.success, blocked: p.blockedUntil>Date.now(), blockedUntil:p.blockedUntil||0, lastError:p.lastError||'', lastLatency:p.lastLatency||0, busy:!!p.busy})), consecutive429 }; },
   reloadProxies() { buildProxyPool(); return proxyPool.length; },
+  validateProxies,
+  validateCurrentProxies,
+  replaceProxyPool,
+  persistProxyPool,
+  applyValidationResults,
+  configure(options={}) { WORKER_LIMIT=Math.max(1,Math.min(24,Number(options.workers||WORKER_LIMIT))); PROXY_TIMEOUT=Math.max(1500,Math.min(15000,Number(options.timeoutMs||PROXY_TIMEOUT))); MAX_PROXY_FAILURES=Math.max(1,Math.min(20,Number(options.maxFailures||MAX_PROXY_FAILURES))); BLOCK_429_MS=Math.max(60000,Math.min(24*60*60*1000,Number(options.block429Minutes||30)*60000)); MIN_INTERVAL=Math.max(100,Math.min(10000,Number(options.minInterval||MIN_INTERVAL))); return this.stats().config; },
   addProxy(url) {
     try {
       if (!url.includes('://')) url='http://'+url;
       new URL(url);
       if (!proxyPool.some(p=>p.url===url)) {
-        proxyPool.push({ url, lastAt:0, fails:0, blockedUntil:0, success:0 });
+        proxyPool.push({ url, lastAt:0, fails:0, blockedUntil:0, success:0, busy:false, lastError:'' });
         console.log('[steam-price-queue] Добавлен прокси '+url);
         return true;
       }

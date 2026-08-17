@@ -1,5 +1,8 @@
 'use strict';
 
+// Queue must be initialized in the web-server process (launch.js starts it as a child).
+require('./scripts/steam-market-queue');
+
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
@@ -7,7 +10,7 @@ const fs = require('fs');
 
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'BASE_URL', 'ALLOW_DEV_LOGIN', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'DB_PATH', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
+  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'BASE_URL', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'DB_PATH', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
   for (const line of localEnv.split(/\r?\n/)) {
     const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
     if (!match || !allowed.has(match[1]) || process.env[match[1]]) continue;
@@ -296,6 +299,7 @@ function slugId(name) {
 
 let PRICE_LOADING = false;
 let PRICE_PROGRESS = { total: 0, done: 0, ok: 0 };
+const PRICE_SPEED_HISTORY = [];
 const WEAR_FULL = {
   FN: 'Factory New',
   MW: 'Minimal Wear',
@@ -371,6 +375,63 @@ const STEAM_HEADERS = {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+function recordPriceHistory(marketHashName, price, source) {
+  if (!price) return;
+  try {
+    const previous = db.prepare('SELECT price FROM steam_price_history WHERE market_hash_name=? ORDER BY id DESC LIMIT 1').get(marketHashName);
+    if (previous && Number(previous.price) === Number(price)) return;
+    const changePercent = previous?.price ? (Number(price) - Number(previous.price)) / Number(previous.price) * 100 : 0;
+    db.prepare('INSERT INTO steam_price_history(market_hash_name,price,source,change_percent,created_at) VALUES(?,?,?,?,?)')
+      .run(marketHashName, price, source, changePercent, Date.now());
+    const threshold = Math.max(5, Number(settingGetRaw('price_alert_percent','35')) || 35);
+    if (previous && Math.abs(changePercent) >= threshold) {
+      const title = 'Резкое изменение цены';
+      const body = `${marketHashName}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}%`;
+      const result = db.prepare(`INSERT INTO notifications(title,body,kind,audience,created_at,expires_at,sent_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(title, body, 'price_alert', 'staff', Date.now(), Date.now()+24*3600000, Date.now());
+      broadcast('notify', { id:Number(result.lastInsertRowid), title, body, audience:'staff', createdAt:Date.now() });
+    }
+  } catch (_) {}
+}
+
+let skinportCache = { at:0, map:new Map() };
+let skinportPromise = null;
+async function loadSkinportPrices() {
+  if (Date.now() - skinportCache.at < 15 * 60_000 && skinportCache.map.size) return skinportCache.map;
+  if (skinportPromise) return skinportPromise;
+  skinportPromise = (async () => {
+    try {
+      const response = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=RUB&tradable=0', { headers:{'Accept-Encoding':'br,gzip,deflate','User-Agent':STEAM_HEADERS['User-Agent']}, signal:AbortSignal.timeout(20000) });
+      if (!response.ok) throw new Error(`Skinport HTTP ${response.status}`);
+      const rows = await response.json();
+      const map = new Map();
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const value = Number(row.min_price || row.suggested_price || 0);
+        if (row.market_hash_name && value > 0) map.set(String(row.market_hash_name), Math.round(value * 100));
+      }
+      skinportCache = { at:Date.now(), map };
+      return map;
+    } catch (error) {
+      console.warn('[skinport]', error.message);
+      return skinportCache.map;
+    } finally { skinportPromise = null; }
+  })();
+  return skinportPromise;
+}
+async function fetchSkinportPrice(marketHashName) {
+  const map = await loadSkinportPrices();
+  const price = Number(map.get(marketHashName) || 0);
+  if (price > 0) {
+    try {
+      db.prepare(`INSERT INTO steam_prices(market_hash_name,lowest_price,median_price,volume,currency,source,updated_at) VALUES(?,?,?,0,'RUB','skinport',?)
+        ON CONFLICT(market_hash_name) DO UPDATE SET lowest_price=excluded.lowest_price,median_price=excluded.median_price,source='skinport',updated_at=excluded.updated_at`)
+        .run(marketHashName, price, price, Date.now());
+      recordPriceHistory(marketHashName, price, 'skinport');
+    } catch (_) {}
+  }
+  return price;
+}
+
 async function fetchSteamPriceRaw(marketHashName) {
   const url = `https://steamcommunity.com/market/priceoverview/?appid=730&currency=5&market_hash_name=${encodeURIComponent(marketHashName)}`;
   try {
@@ -410,6 +471,7 @@ async function fetchSteamPriceSingle(marketHashName) {
             median_price=excluded.median_price, volume=excluded.volume, updated_at=excluded.updated_at`)
           .run(marketHashName, lowest, median, volume, Date.now());
         } catch {}
+        recordPriceHistory(marketHashName, price, 'steam');
         return price;
       }
       try {
@@ -431,9 +493,15 @@ async function fetchSteamPriceSingle(marketHashName) {
 }
 async function fetchPriceForItem(item) {
   const names = getMarketNamesForItem(item);
-  for (const mn of names) {
-    const price = await fetchSteamPriceSingle(mn);
-    if (price > 0) return price;
+  const source = settingGetRaw('price_source','auto');
+  for (const marketName of names) {
+    if (source === 'skinport') {
+      const price = await fetchSkinportPrice(marketName); if (price > 0) return price;
+    } else {
+      if (source === 'auto' && Date.now() < rateLimitedUntil) { const fallback = await fetchSkinportPrice(marketName); if (fallback > 0) return fallback; }
+      const steamPrice = await fetchSteamPriceSingle(marketName); if (steamPrice > 0) return steamPrice;
+      if (source === 'auto') { const fallback = await fetchSkinportPrice(marketName); if (fallback > 0) return fallback; }
+    }
   }
   return 0;
 }
@@ -555,7 +623,22 @@ async function buildFullCatalog() {
   const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
   const estimated = CATALOG.filter(i => i._isEstimated).length;
   console.log(`[catalog] Предметов: ${CATALOG.length} (статичных ${STATIC_CATALOG.length}, динамических ${dynamic.length}); с ценой: ${withPrice} (оценочных ${estimated})`);
-  setTimeout(() => {
+  setTimeout(async () => {
+    try {
+      const priceQueue = global.__priceQueue;
+      const proxyCount = priceQueue?.stats?.().proxies || 0;
+      if (proxyCount > 0 && priceQueue.validateCurrentProxies) {
+        console.log(`[prices] Проверяю ${proxyCount} прокси перед загрузкой цен…`);
+        const proxyConfig = getPriceManagerConfig();
+        const checked = await priceQueue.validateCurrentProxies({ concurrency: proxyConfig.workers, timeoutMs: proxyConfig.timeoutMs, persist: true });
+        if (!checked.working) {
+          console.warn('[prices] Рабочих прокси не найдено — автоматическая полная загрузка цен пропущена. Добавьте приватные прокси или запустите обновление вручную.');
+          return;
+        }
+      }
+    } catch (error) {
+      console.warn('[prices] Проверка прокси не завершена:', error.message);
+    }
     refreshAllSteamPrices().catch(e => console.warn('[prices]', e.message));
   }, 3000);
   return CATALOG;
@@ -593,6 +676,9 @@ async function refreshAllSteamPrices() {
         const elapsed = ((Date.now() - start) / 1000).toFixed(0);
         const pct = ((done / tasks.length) * 100).toFixed(1);
         const eta = done ? ((tasks.length - done) * (Date.now() - start) / done / 1000).toFixed(0) : '?';
+        const rate = done / Math.max(1, (Date.now()-start)/1000);
+        PRICE_SPEED_HISTORY.push({ at:Date.now(), done, rate });
+        if (PRICE_SPEED_HISTORY.length>60) PRICE_SPEED_HISTORY.shift();
         console.log(`[prices] ${done}/${tasks.length} (${pct}%) за ${elapsed}с, реальных цен ${okCount}, ETA ~${eta}с, conc=${concurrency}`);
       }
     });
@@ -782,6 +868,9 @@ const STATIC_ROOT_FILES = new Set([
   '/manifest.json',
   '/index.html',
   '/tos.html',
+  '/privacy.html',
+  '/cookies.html',
+  '/aml.html',
   '/robots.txt'
 ]);
 app.get([...STATIC_ROOT_FILES], (req, res) => {
@@ -908,6 +997,68 @@ ensureColumn('support_messages', 'from_staff', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('support_messages', 'staff_id', 'INTEGER');
 ensureColumn('support_messages', 'read_at', 'INTEGER');
 ensureColumn('users', 'email_optout', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'frozen', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'freeze_reason', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('users', 'tags', "TEXT NOT NULL DEFAULT '[]'");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS support_tickets(
+    user_id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'open',
+    updated_at INTEGER NOT NULL,
+    closed_at INTEGER,
+    purge_at INTEGER
+  );
+`);
+ensureColumn('support_tickets', 'category', "TEXT NOT NULL DEFAULT 'account'");
+ensureColumn('support_tickets', 'priority', "TEXT NOT NULL DEFAULT 'normal'");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS support_ticket_history(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    staff_id INTEGER,
+    event TEXT NOT NULL,
+    old_value TEXT NOT NULL DEFAULT '',
+    new_value TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_support_history_user ON support_ticket_history(user_id, id DESC);
+  CREATE TABLE IF NOT EXISTS steam_price_history(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_hash_name TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    change_percent REAL NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_price_history_name ON steam_price_history(market_hash_name, id DESC);
+`);
+
+db.prepare(`
+  INSERT INTO support_tickets(user_id,status,updated_at)
+  SELECT user_id,'open',MAX(created_at) FROM support_messages
+  WHERE user_id IS NOT NULL GROUP BY user_id
+  ON CONFLICT(user_id) DO NOTHING
+`).run();
+
+function purgeClosedSupportTickets() {
+  const now = Date.now();
+  const expired = db.prepare("SELECT user_id FROM support_tickets WHERE status = 'closed' AND purge_at IS NOT NULL AND purge_at <= ?").all(now);
+  if (!expired.length) return 0;
+  const removeMessages = db.prepare('DELETE FROM support_messages WHERE user_id = ?');
+  const removeTicket = db.prepare('DELETE FROM support_tickets WHERE user_id = ?');
+  const removeHistory = db.prepare('DELETE FROM support_ticket_history WHERE user_id = ?');
+  db.transaction(() => {
+    for (const row of expired) {
+      removeMessages.run(row.user_id);
+      removeHistory.run(row.user_id);
+      removeTicket.run(row.user_id);
+    }
+  })();
+  return expired.length;
+}
+setInterval(() => { try { purgeClosedSupportTickets(); } catch (_) {} }, 60_000).unref();
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS transactions(
@@ -1015,6 +1166,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_case_openings_case ON case_openings(case_id);
 `);
 
+ensureColumn('notifications', 'scheduled_at', 'INTEGER');
+ensureColumn('notifications', 'sent_at', 'INTEGER');
+
 (function seedCases() {
   try {
     const count = db.prepare('SELECT COUNT(*) AS c FROM custom_cases').get().c;
@@ -1100,8 +1254,16 @@ function requireStaff(req, res, next) {
   next();
 }
 
-const clients = new Set();
 const onlineClients = new Map();
+function uniqueOnlineClients() {
+  const unique = new Map();
+  for (const entry of onlineClients.values()) {
+    const previous = unique.get(entry.visitorKey);
+    if (!previous || previous.connectedAt < entry.connectedAt) unique.set(entry.visitorKey, entry);
+  }
+  return Array.from(unique.values());
+}
+function onlineCount() { return uniqueOnlineClients().length; }
 function cleanSessions() { db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()); }
 setInterval(cleanSessions, 600000).unref();
 function updateOnlineActivity(req) {
@@ -1122,6 +1284,14 @@ app.use((req, res, next) => {
     updateOnlineActivity(req);
   }
   next();
+});
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/') || req.method === 'GET') return next();
+  const account = currentUser(req);
+  if (!account || !account.frozen || isStaff(account)) return next();
+  const allowed = ['/api/support/contact', '/api/support/messages', '/api/auth/logout', '/auth/logout'];
+  if (allowed.some(pathname => req.path.startsWith(pathname))) return next();
+  res.status(423).json({ error: account.freeze_reason || 'Аккаунт временно заморожен. Доступна только поддержка.', frozen: true });
 });
 
 function sign(value) {
@@ -1186,9 +1356,6 @@ function broadcast(type, payload) {
   const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const entry of onlineClients.values()) {
     try { entry.res.write(data); } catch {}
-  }
-  for (const response of clients) {
-    try { response.write(data); } catch { clients.delete(response); }
   }
 }
 function requestBase(req) {
@@ -1530,33 +1697,16 @@ ${isAccessDenied ? `
 <p><b>Что делать:</b></p>
 <ol>
 <li>Включи <b>VPN</b> (другая страна) и попробуй снова — <a href="/auth/steam">/auth/steam</a></li>
-<li>Или зайди без Steam для теста: <a class="btn" href="/auth/dev">Войти как Preview Player (dev)</a></li>
 <li>Добавь прокси в <code>data/proxies.txt</code> и включи их в админке → Логи и система → Прокси. Система сама будет проверять Steam через прокси.</li>
 <li>Проверь <code>BASE_URL</code> в .env — должен быть твой публичный домен без / в конце, для localhost оставь пустым.</li>
 </ol>
-<p>Дев-логин работает всегда, если в .env есть <code>ALLOW_DEV_LOGIN=1</code> или ты на localhost.</p>
-` : `<p>Попробуй еще раз: <a href="/auth/steam">Войти через Steam</a> или <a href="/auth/dev">Войти как тестовый игрок</a></p>`}
+` : `<p>Попробуй еще раз: <a href="/auth/steam">Войти через Steam</a></p>`}
 <p><a href="/">← На главную</a></p>
 </div>
 `);
   }
 });
 
-if (process.env.ALLOW_DEV_LOGIN === '1' || process.env.ALLOW_DEV_LOGIN === undefined) {
-  // dev login доступен по умолчанию на localhost, в проде отключи ALLOW_DEV_LOGIN=0
-  app.get('/auth/dev', (req, res) => {
-    const now = Date.now();
-    const steamid = '76561190000000001';
-    let dev = db.prepare('SELECT * FROM users WHERE steamid = ?').get(steamid);
-    if (!dev) {
-      const id = Number(db.prepare('INSERT INTO users(steamid,name,avatar,balance_cents,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-        .run(steamid, 'Preview Player', '', 500000, now, now).lastInsertRowid);
-      dev = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-    }
-    setCookie(res, createSession(dev.id));
-    res.redirect('/');
-  });
-}
 app.post('/auth/logout', (req, res) => {
   clearCookie(res, cookies(req.headers.cookie || '').session);
   res.json({ ok: true });
@@ -1577,7 +1727,17 @@ queue.on('notify.user', payload => {
   broadcast('notify', payload);
 });
 
-app.get('/api/config', (_, res) => res.json({ brand: BRAND_NAME, telegram: TELEGRAM_URL }));
+app.get('/api/config', (_, res) => {
+  let banner = null;
+  try { banner = JSON.parse(settingGetRaw('site_banner', 'null')); } catch {}
+  res.json({
+    brand: settingGetRaw('site_brand', BRAND_NAME) || BRAND_NAME,
+    telegram: settingGetRaw('site_telegram', TELEGRAM_URL) || TELEGRAM_URL,
+    supportEmail: settingGetRaw('site_support_email', 'support@caser.gg'),
+    marketingEmail: settingGetRaw('site_marketing_email', 'marketing@caser.gg'),
+    banner: banner && banner.enabled ? banner : null
+  });
+});
 app.get('/api/stats', (_, res) => {
   const cached = cache.get('stats:global');
   if (cached) return res.json(cached);
@@ -1606,7 +1766,9 @@ app.get('/api/me', async (req, res) => {
     user: {
       id: account.id, steamid: account.steamid, name: account.name,
       avatar: account.avatar, balanceCents: account.balance_cents,
-      role: roleOf(account), banned: !!account.banned, banReason: account.ban_reason || ''
+      role: roleOf(account), banned: !!account.banned, banReason: account.ban_reason || '',
+      frozen: !!account.frozen, freezeReason: account.freeze_reason || '',
+      tags: (() => { try { return JSON.parse(account.tags || '[]'); } catch { return []; } })()
     }
   });
 });
@@ -1907,20 +2069,19 @@ app.get('/api/events', (req, res) => {
     connectedAt: Date.now(),
     lastAction: Date.now(),
     lastPath: '/events',
-    action: 'online'
+    action: 'online',
+    visitorKey: account ? `user:${account.id}` : `guest:${ip}|${ua}`
   };
   onlineClients.set(id, entry);
-  clients.add(res);
-  broadcast('online', { online: onlineClients.size });
+  broadcast('online', { online: onlineCount() });
   req.on('close', () => {
     onlineClients.delete(id);
-    clients.delete(res);
-    broadcast('online', { online: onlineClients.size });
+    broadcast('online', { online: onlineCount() });
   });
 });
-app.get('/api/online', (_, res) => res.json({ online: onlineClients.size }));
+app.get('/api/online', (_, res) => res.json({ online: onlineCount() }));
 app.get('/api/admin/online', requireStaff, (req, res) => {
-  const list = Array.from(onlineClients.values()).map(c => ({
+  const list = uniqueOnlineClients().map(c => ({
     id: c.id,
     user: c.user,
     ip: c.ip,
@@ -1972,7 +2133,7 @@ app.get('/api/admin/summary', requireStaff, (req, res) => {
     users: db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_bot = 0').get().c,
     bots: db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_bot = 1').get().c,
     banned: db.prepare('SELECT COUNT(*) AS c FROM users WHERE banned = 1').get().c,
-    online: clients.size,
+    online: onlineCount(),
     balanceCents: db.prepare('SELECT COALESCE(SUM(balance_cents),0) AS s FROM users').get().s,
     casesOpened: db.prepare('SELECT COUNT(*) AS c FROM case_openings').get().c,
     casesDay: db.prepare('SELECT COUNT(*) AS c FROM case_openings WHERE created_at > ?').get(day).c,
@@ -1997,12 +2158,12 @@ app.get('/api/admin/users', requireStaff, (req, res) => {
   const query = `%${String(req.query.q || '').trim().toLowerCase()}%`;
   const rows = db.prepare(`
     SELECT id, steamid, name, avatar, balance_cents AS balanceCents, role, banned,
-      ban_reason AS banReason, is_bot AS isBot, luck_modifier AS luckModifier, created_at AS createdAt
+      ban_reason AS banReason, frozen, freeze_reason AS freezeReason, tags, is_bot AS isBot, luck_modifier AS luckModifier, created_at AS createdAt
     FROM users
     WHERE LOWER(name) LIKE ? OR steamid LIKE ?
     ORDER BY id DESC LIMIT 100
   `).all(query, query);
-  res.json({ users: rows.map(row => ({ ...row, banned: !!row.banned, isBot: !!row.isBot })) });
+  res.json({ users: rows.map(row => ({ ...row, banned: !!row.banned, frozen: !!row.frozen, tags: (() => { try { return JSON.parse(row.tags || '[]'); } catch { return []; } })(), isBot: !!row.isBot })) });
 });
 
 app.get('/api/admin/users/:id', requireStaff, (req, res) => {
@@ -2021,12 +2182,35 @@ app.get('/api/admin/users/:id', requireStaff, (req, res) => {
     user: {
       id: user.id, steamid: user.steamid, name: user.name, avatar: user.avatar,
       balanceCents: user.balance_cents, role: roleOf(user), banned: !!user.banned,
-      banReason: user.ban_reason, isBot: !!user.is_bot, luckModifier: user.luck_modifier,
+      banReason: user.ban_reason, frozen: !!user.frozen, freezeReason: user.freeze_reason || '', tags: (() => { try { return JSON.parse(user.tags || '[]'); } catch { return []; } })(), isBot: !!user.is_bot, luckModifier: user.luck_modifier,
       email: user.support_email || '', emailOptout: !!user.email_optout,
       createdAt: user.created_at
     },
     inventory, transactions
   });
+});
+
+app.post('/api/admin/users/:id/freeze', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const frozen = req.body?.frozen ? 1 : 0;
+  const reason = String(req.body?.reason || '').trim().slice(0, 240);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (isStaff(user) && frozen) return res.status(400).json({ error: 'Нельзя заморозить сотрудника' });
+  db.prepare('UPDATE users SET frozen=?,freeze_reason=?,updated_at=? WHERE id=?').run(frozen, frozen ? (reason || 'Аккаунт временно заморожен') : '', Date.now(), id);
+  adminLog(req.account, frozen ? 'user_freeze' : 'user_unfreeze', user.name, reason);
+  res.json({ ok: true, frozen: !!frozen });
+});
+
+app.post('/api/admin/users/:id/tags', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const allowed = new Set(['vip','suspicious','verified','partner']);
+  const tags = [...new Set((Array.isArray(req.body?.tags) ? req.body.tags : []).map(String).filter(tag => allowed.has(tag)))];
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+  db.prepare('UPDATE users SET tags=?,updated_at=? WHERE id=?').run(JSON.stringify(tags), Date.now(), id);
+  adminLog(req.account, 'user_tags', user.name, tags.join(', ') || 'без меток');
+  res.json({ ok: true, tags });
 });
 
 app.post('/api/admin/users/:id/balance', requireAdmin, (req, res) => {
@@ -2235,8 +2419,10 @@ app.put('/api/admin/cases/:id', requireAdmin, (req, res) => {
   if (v.error) return res.status(400).json({ error: v.error });
   const now = Date.now();
   try {
-    db.prepare(`UPDATE custom_cases SET name=?,description=?,price_cents=?,once=?,enabled=?,image=?,max_openings=?,level_min=?,starts_at=?,ends_at=?,discount_percent=?,contents=?,updated_at=? WHERE id=?`)
+    const update = db.prepare(`UPDATE custom_cases SET name=?,description=?,price_cents=?,once=?,enabled=?,image=?,max_openings=?,level_min=?,starts_at=?,ends_at=?,discount_percent=?,contents=?,updated_at=? WHERE id=?`)
       .run(v.name, v.description, v.priceCents, v.once, v.enabled, v.image, v.max_openings, v.level_min, v.starts_at, v.ends_at, v.discount_percent, JSON.stringify(v.contents), now, v.id);
+    if (!update.changes) return res.status(404).json({ error: 'Кейс отсутствует в базе данных' });
+    db.prepare('DELETE FROM case_overrides WHERE case_id = ?').run(v.id);
     refreshCasesCache();
     adminLog(req.account, 'case_edit', v.name, v.id);
     res.json({ ok: true });
@@ -2413,19 +2599,31 @@ app.delete('/api/admin/promos/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+const supportTyping = new Map();
+function addTicketHistory(userId, staffId, event, oldValue, newValue) {
+  db.prepare('INSERT INTO support_ticket_history(user_id,staff_id,event,old_value,new_value,created_at) VALUES(?,?,?,?,?,?)')
+    .run(userId, staffId || null, event, String(oldValue || ''), String(newValue || ''), Date.now());
+}
+
 app.get('/api/admin/support', requireStaff, (_, res) => {
+  purgeClosedSupportTickets();
   const threads = db.prepare(`
     SELECT u.id AS userId, u.name AS userName, u.avatar, u.support_email AS email,
       COUNT(m.id) AS messages,
       SUM(CASE WHEN m.from_staff = 0 AND m.read_at IS NULL THEN 1 ELSE 0 END) AS unread,
-      MAX(m.created_at) AS lastAt
-    FROM support_messages m JOIN users u ON u.id = m.user_id
-    GROUP BY u.id ORDER BY MAX(m.created_at) DESC LIMIT 50
+      MAX(m.created_at) AS lastAt,
+      COALESCE(t.status, 'open') AS status, COALESCE(t.category, 'account') AS category, COALESCE(t.priority, 'normal') AS priority, t.closed_at AS closedAt, t.purge_at AS purgeAt
+    FROM support_messages m
+    JOIN users u ON u.id = m.user_id
+    LEFT JOIN support_tickets t ON t.user_id = u.id
+    GROUP BY u.id, t.status, t.category, t.priority, t.closed_at, t.purge_at
+    ORDER BY MAX(m.created_at) DESC LIMIT 50
   `).all();
   res.json({ threads });
 });
 
 app.get('/api/admin/support/:userId', requireStaff, (req, res) => {
+  purgeClosedSupportTickets();
   const userId = Number(req.params.userId);
   const user = db.prepare('SELECT id, name, avatar, support_email AS email FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -2433,9 +2631,17 @@ app.get('/api/admin/support/:userId', requireStaff, (req, res) => {
     SELECT id, message, from_staff AS fromStaff, created_at AS createdAt
     FROM support_messages WHERE user_id = ? ORDER BY id ASC LIMIT 200
   `).all(userId);
+  if (!messages.length) return res.status(404).json({ error: 'Тикет удалён или не существует' });
+  const ticket = db.prepare("SELECT status, category, priority, updated_at AS updatedAt, closed_at AS closedAt, purge_at AS purgeAt FROM support_tickets WHERE user_id = ?").get(userId)
+    || { status: 'open', category: 'account', priority: 'normal', updatedAt: Date.now(), closedAt: null, purgeAt: null };
   db.prepare('UPDATE support_messages SET read_at = ? WHERE user_id = ? AND from_staff = 0 AND read_at IS NULL')
     .run(Date.now(), userId);
-  res.json({ user, messages: messages.map(row => ({ ...row, fromStaff: !!row.fromStaff })) });
+  const history = db.prepare(`SELECT h.id,h.event,h.old_value AS oldValue,h.new_value AS newValue,h.created_at AS createdAt,
+    COALESCE(u.name,'Система') AS staffName FROM support_ticket_history h LEFT JOIN users u ON u.id=h.staff_id
+    WHERE h.user_id=? ORDER BY h.id DESC LIMIT 50`).all(userId);
+  const typing = supportTyping.get(userId);
+  const typingStaff = typing && typing.expiresAt > Date.now() && typing.staffId !== req.account.id ? typing.staffName : '';
+  res.json({ user, ticket, history, typingStaff, messages: messages.map(row => ({ ...row, fromStaff: !!row.fromStaff })) });
 });
 
 app.post('/api/admin/support/:userId', requireStaff, (req, res) => {
@@ -2444,11 +2650,59 @@ app.post('/api/admin/support/:userId', requireStaff, (req, res) => {
   if (!message) return res.status(400).json({ error: 'Пустое сообщение' });
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  db.prepare('INSERT INTO support_messages(user_id,message,from_staff,staff_id,created_at) VALUES(?,?,1,?,?)')
-    .run(userId, message, req.account.id, Date.now());
+  const now = Date.now();
+  db.transaction(() => {
+    db.prepare('INSERT INTO support_messages(user_id,message,from_staff,staff_id,created_at) VALUES(?,?,1,?,?)')
+      .run(userId, message, req.account.id, now);
+    db.prepare(`INSERT INTO support_tickets(user_id,status,updated_at,closed_at,purge_at) VALUES(?,'pending',?,NULL,NULL)
+      ON CONFLICT(user_id) DO UPDATE SET status='pending',updated_at=excluded.updated_at,closed_at=NULL,purge_at=NULL`).run(userId, now);
+  })();
+  addTicketHistory(userId, req.account.id, 'reply', '', message.slice(0, 120));
+  supportTyping.delete(userId);
   adminLog(req.account, 'support_reply', user.name, message.slice(0, 60));
   try { notifyStaffReply(userId, message); } catch (_) {}
-  res.json({ ok: true });
+  res.json({ ok: true, status: 'pending' });
+});
+
+app.patch('/api/admin/support/:userId/status', requireStaff, (req, res) => {
+  const userId = Number(req.params.userId);
+  const status = String(req.body?.status || '');
+  if (!['open', 'pending', 'closed'].includes(status)) return res.status(400).json({ error: 'Неизвестный статус тикета' });
+  const exists = db.prepare('SELECT 1 FROM support_messages WHERE user_id = ? LIMIT 1').get(userId);
+  if (!exists) return res.status(404).json({ error: 'Тикет не найден' });
+  const previous = db.prepare('SELECT status FROM support_tickets WHERE user_id=?').get(userId)?.status || 'open';
+  const now = Date.now();
+  const closedAt = status === 'closed' ? now : null;
+  const purgeAt = status === 'closed' ? now + 5 * 60_000 : null;
+  db.prepare(`INSERT INTO support_tickets(user_id,status,updated_at,closed_at,purge_at) VALUES(?,?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,closed_at=excluded.closed_at,purge_at=excluded.purge_at`)
+    .run(userId, status, now, closedAt, purgeAt);
+  const user = db.prepare('SELECT name FROM users WHERE id = ?').get(userId);
+  addTicketHistory(userId, req.account.id, 'status', previous, status);
+  adminLog(req.account, 'support_status', user?.name || String(userId), status);
+  if (status === 'closed') setTimeout(() => { try { purgeClosedSupportTickets(); } catch (_) {} }, 5 * 60_000 + 1000).unref?.();
+  res.json({ ok: true, status, closedAt, purgeAt });
+});
+
+app.patch('/api/admin/support/:userId/meta', requireStaff, (req, res) => {
+  const userId = Number(req.params.userId);
+  const ticket = db.prepare('SELECT * FROM support_tickets WHERE user_id=?').get(userId);
+  if (!ticket) return res.status(404).json({ error: 'Тикет не найден' });
+  const categories = ['payments','withdrawal','account','errors'];
+  const priorities = ['low','normal','high','critical'];
+  const category = categories.includes(String(req.body?.category)) ? String(req.body.category) : ticket.category;
+  const priority = priorities.includes(String(req.body?.priority)) ? String(req.body.priority) : ticket.priority;
+  db.prepare('UPDATE support_tickets SET category=?,priority=?,updated_at=? WHERE user_id=?').run(category, priority, Date.now(), userId);
+  if (category !== ticket.category) addTicketHistory(userId, req.account.id, 'category', ticket.category, category);
+  if (priority !== ticket.priority) addTicketHistory(userId, req.account.id, 'priority', ticket.priority, priority);
+  adminLog(req.account, 'support_meta', String(userId), `category=${category} priority=${priority}`);
+  res.json({ ok:true, category, priority });
+});
+
+app.post('/api/admin/support/:userId/typing', requireStaff, (req, res) => {
+  const userId = Number(req.params.userId);
+  supportTyping.set(userId, { staffId:req.account.id, staffName:req.account.name, expiresAt:Date.now()+5000 });
+  res.json({ ok:true });
 });
 
 app.get('/api/admin/logs', requireStaff, (req, res) => {
@@ -2491,7 +2745,7 @@ app.get('/api/admin/logs', requireStaff, (req, res) => {
       memoryMb: Math.round(memory.rss / 1048576),
       heapMb: Math.round(memory.heapUsed / 1048576),
       nodeVersion: process.version,
-      online: onlineClients.size,
+      online: onlineCount(),
       catalogSize: CATALOG.length,
       dbSizeMb: (() => {
         try { return Math.round(fs.statSync(DB_PATH).size / 1048576 * 10) / 10; } catch { return 0; }
@@ -2519,20 +2773,28 @@ app.post('/api/support/contact', (req, res) => {
 app.get('/api/support/messages', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'login_required' });
-  res.json(db.prepare(`
-    SELECT id,message,from_staff AS fromStaff,created_at AS createdAt FROM support_messages
-    WHERE user_id = ? ORDER BY id DESC LIMIT 50
-  `).all(account.id).reverse().map(row => ({ ...row, fromStaff: !!row.fromStaff })));
+  const messages = db.prepare(`SELECT id,message,from_staff AS fromStaff,created_at AS createdAt FROM support_messages
+    WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(account.id).reverse().map(row => ({ ...row, fromStaff: !!row.fromStaff }));
+  const ticket = db.prepare('SELECT status,category,priority,updated_at AS updatedAt FROM support_tickets WHERE user_id=?').get(account.id) || null;
+  res.json({ messages, ticket });
 });
 app.post('/api/support/messages', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'login_required' });
   const message = String(req.body?.message || '').trim();
+  const categories = ['payments','withdrawal','account','errors'];
+  const category = categories.includes(String(req.body?.category)) ? String(req.body.category) : 'account';
   if (!message || message.length > 2000) return res.status(400).json({ error: 'invalid_message' });
   const now = Date.now();
-  const result = db.prepare('INSERT INTO support_messages(user_id,message,created_at) VALUES(?,?,?)')
-    .run(account.id, message, now);
+  let result;
+  db.transaction(() => {
+    result = db.prepare('INSERT INTO support_messages(user_id,message,created_at) VALUES(?,?,?)').run(account.id, message, now);
+    db.prepare(`INSERT INTO support_tickets(user_id,status,category,priority,updated_at,closed_at,purge_at) VALUES(?,'open',?,'normal',?,NULL,NULL)
+      ON CONFLICT(user_id) DO UPDATE SET status='open',category=excluded.category,updated_at=excluded.updated_at,closed_at=NULL,purge_at=NULL`).run(account.id, category, now);
+  })();
+  addTicketHistory(account.id, null, 'message', '', message.slice(0,120));
   queue.publish('support.notify', { userId: account.id, message, createdAt: now });
+  broadcast('support-ticket', { userId:account.id, userName:account.name, category, priority:'normal', message:message.slice(0,120), createdAt:now });
   res.json({ id: Number(result.lastInsertRowid), message, createdAt: now });
 });
 
@@ -2541,9 +2803,9 @@ app.get('/api/notifications', (req, res) => {
   const rows = db.prepare(`
     SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt
     FROM notifications
-    WHERE (expires_at IS NULL OR expires_at > ?)
+    WHERE (expires_at IS NULL OR expires_at > ?) AND (scheduled_at IS NULL OR scheduled_at <= ?)
     ORDER BY id DESC LIMIT 20
-  `).all(now);
+  `).all(now, now);
   res.json({ notifications: rows });
 });
 
@@ -2571,22 +2833,22 @@ app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
   const body = String(req.body?.body || '').trim().slice(0, 1000);
   const audience = String(req.body?.audience || 'all');
   const ttlHours = Math.max(0, Math.min(720, Number(req.body?.ttlHours || 24)));
+  const scheduledAt = Number(req.body?.scheduledAt || 0) || null;
   if (!title || !body) return res.status(400).json({ error: 'Укажите заголовок и текст' });
   if (!['all', 'authenticated', 'guests'].includes(audience)) return res.status(400).json({ error: 'Некорректная аудитория' });
   const now = Date.now();
   const expires = ttlHours ? now + ttlHours * 3600000 : null;
-  const result = db.prepare(`
-    INSERT INTO notifications(title,body,kind,audience,created_at,expires_at)
-    VALUES(?,?,?,?,?,?)
-  `).run(title, body, 'broadcast', audience, now, expires);
-  broadcast('notify', { id: Number(result.lastInsertRowid), title, body, audience, createdAt: now });
-  adminLog(req.account, 'broadcast', title, body.slice(0, 100));
+  const sendNow = !scheduledAt || scheduledAt <= now;
+  const result = db.prepare(`INSERT INTO notifications(title,body,kind,audience,created_at,expires_at,scheduled_at,sent_at)
+    VALUES(?,?,?,?,?,?,?,?)`).run(title, body, 'broadcast', audience, now, expires, scheduledAt, sendNow ? now : null);
+  if (sendNow) broadcast('notify', { id: Number(result.lastInsertRowid), title, body, audience, createdAt: now });
+  adminLog(req.account, 'broadcast', title, scheduledAt ? `Запланировано: ${new Date(scheduledAt).toISOString()}` : body.slice(0, 100));
   res.json({ ok: true, id: Number(result.lastInsertRowid) });
 });
 
 app.get('/api/admin/broadcasts', requireStaff, (_, res) => {
   const rows = db.prepare(`
-    SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt
+    SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt, scheduled_at AS scheduledAt, sent_at AS sentAt
     FROM notifications ORDER BY id DESC LIMIT 50
   `).all();
   res.json({ broadcasts: rows });
@@ -2596,6 +2858,41 @@ app.delete('/api/admin/broadcasts/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM notifications WHERE id = ?').run(Number(req.params.id));
   adminLog(req.account, 'broadcast_delete', req.params.id, '');
   res.json({ ok: true });
+});
+
+function sendScheduledNotifications() {
+  const now = Date.now();
+  const rows = db.prepare(`SELECT id,title,body,audience,created_at AS createdAt FROM notifications
+    WHERE sent_at IS NULL AND scheduled_at IS NOT NULL AND scheduled_at <= ? AND (expires_at IS NULL OR expires_at > ?)
+    ORDER BY id ASC LIMIT 50`).all(now, now);
+  for (const row of rows) {
+    broadcast('notify', row);
+    db.prepare('UPDATE notifications SET sent_at=? WHERE id=?').run(now, row.id);
+  }
+}
+setInterval(() => { try { sendScheduledNotifications(); } catch (_) {} }, 30_000).unref();
+
+app.get('/api/admin/site', requireStaff, (_req, res) => {
+  let banner = null;
+  try { banner = JSON.parse(settingGetRaw('site_banner','null')); } catch {}
+  res.json({
+    brand: settingGetRaw('site_brand', BRAND_NAME), telegram: settingGetRaw('site_telegram', TELEGRAM_URL),
+    supportEmail: settingGetRaw('site_support_email','support@caser.gg'), marketingEmail: settingGetRaw('site_marketing_email','marketing@caser.gg'),
+    maintenance: settingGetRaw('maintenance',''), banner
+  });
+});
+app.post('/api/admin/site', requireAdmin, (req, res) => {
+  const brand = String(req.body?.brand || BRAND_NAME).trim().slice(0,60);
+  const telegram = String(req.body?.telegram || TELEGRAM_URL).trim().slice(0,240);
+  const supportEmail = String(req.body?.supportEmail || '').trim().slice(0,160);
+  const marketingEmail = String(req.body?.marketingEmail || '').trim().slice(0,160);
+  const banner = req.body?.banner && typeof req.body.banner === 'object' ? {
+    enabled: !!req.body.banner.enabled, title:String(req.body.banner.title||'').slice(0,120), body:String(req.body.banner.body||'').slice(0,500),
+    link:String(req.body.banner.link||'').slice(0,300), tone:['info','warning','danger','success'].includes(req.body.banner.tone)?req.body.banner.tone:'info'
+  } : null;
+  settingSet('site_brand', brand); settingSet('site_telegram', telegram); settingSet('site_support_email', supportEmail); settingSet('site_marketing_email', marketingEmail); settingSet('site_banner', JSON.stringify(banner));
+  adminLog(req.account,'site_config',brand,banner?.enabled?'Баннер включён':'Баннер выключен');
+  res.json({ok:true,brand,telegram,supportEmail,marketingEmail,banner});
 });
 
 app.post('/api/admin/maintenance', requireAdmin, (req, res) => {
@@ -2635,6 +2932,68 @@ app.post('/api/admin/prices/refresh', requireAdmin, async (req, res) => {
   }
 });
 
+function getPriceManagerConfig() {
+  return {
+    workers:Number(settingGetRaw('price_workers','12')) || 12,
+    timeoutMs:Number(settingGetRaw('proxy_timeout_ms','4000')) || 4000,
+    maxFailures:Number(settingGetRaw('proxy_max_failures','3')) || 3,
+    block429Minutes:Number(settingGetRaw('proxy_block_429_minutes','30')) || 30,
+    checkIntervalMinutes:Number(settingGetRaw('proxy_check_interval_minutes','15')) || 15,
+    minInterval:Number(settingGetRaw('price_min_interval','400')) || 400,
+    source:settingGetRaw('price_source','auto'), alertPercent:Number(settingGetRaw('price_alert_percent','35')) || 35
+  };
+}
+function applyPriceManagerConfig() {
+  const config = getPriceManagerConfig();
+  global.__priceQueue?.configure?.(config);
+  return config;
+}
+applyPriceManagerConfig();
+let lastScheduledProxyCheck = Date.now();
+setInterval(async () => {
+  const config = getPriceManagerConfig();
+  if (Date.now()-lastScheduledProxyCheck < config.checkIntervalMinutes*60000) return;
+  lastScheduledProxyCheck=Date.now();
+  const manager=global.__priceQueue;
+  if (!manager?.stats?.().proxies || manager.stats().validating) return;
+  try { await manager.validateCurrentProxies({concurrency:config.workers,timeoutMs:config.timeoutMs,persist:true}); } catch (_) {}
+},60_000).unref();
+
+app.get('/api/admin/prices/config', requireStaff, (_req,res)=>res.json(getPriceManagerConfig()));
+app.post('/api/admin/prices/config', requireAdmin, (req,res)=>{
+  const source=['steam','skinport','auto'].includes(String(req.body?.source))?String(req.body.source):'auto';
+  const values={
+    price_workers:Math.max(1,Math.min(24,Number(req.body?.workers)||12)), proxy_timeout_ms:Math.max(1500,Math.min(15000,Number(req.body?.timeoutMs)||4000)),
+    proxy_max_failures:Math.max(1,Math.min(20,Number(req.body?.maxFailures)||3)), proxy_block_429_minutes:Math.max(1,Math.min(1440,Number(req.body?.block429Minutes)||30)),
+    proxy_check_interval_minutes:Math.max(5,Math.min(1440,Number(req.body?.checkIntervalMinutes)||15)), price_min_interval:Math.max(100,Math.min(10000,Number(req.body?.minInterval)||400)),
+    price_source:source, price_alert_percent:Math.max(5,Math.min(500,Number(req.body?.alertPercent)||35))
+  };
+  for(const [key,value] of Object.entries(values)) settingSet(key,String(value));
+  const config=applyPriceManagerConfig(); adminLog(req.account,'price_config','',JSON.stringify(config)); res.json({ok:true,...config});
+});
+app.get('/api/admin/prices/history', requireStaff, (req,res)=>{
+  const query=String(req.query.q||'').trim(); const rows=query?
+    db.prepare(`SELECT market_hash_name AS marketHashName,price,source,change_percent AS changePercent,created_at AS createdAt FROM steam_price_history WHERE market_hash_name LIKE ? ORDER BY id DESC LIMIT 200`).all(`%${query}%`):
+    db.prepare(`SELECT market_hash_name AS marketHashName,price,source,change_percent AS changePercent,created_at AS createdAt FROM steam_price_history ORDER BY id DESC LIMIT 200`).all();
+  res.json({history:rows});
+});
+app.post('/api/admin/proxies/import', requireAdmin, async (req,res)=>{
+  const text=String(req.body?.text||'').slice(0,500000); const values=text.split(/[\r\n,;\s]+/).map(value=>value.trim()).filter(Boolean).slice(0,1000);
+  if(!values.length)return res.status(400).json({error:'Файл не содержит прокси'});
+  const manager=global.__priceQueue; const checked=await manager.validateProxies(values,{concurrency:getPriceManagerConfig().workers,timeoutMs:getPriceManagerConfig().timeoutMs});
+  manager.replaceProxyPool(checked.workingUrls); manager.applyValidationResults(checked.results); manager.persistProxyPool();
+  adminLog(req.account,'proxy_import','',`checked=${checked.checked} working=${checked.working}`); res.json({ok:true,...checked,results:undefined});
+});
+app.get('/api/admin/proxies/export', requireAdmin, (_req,res)=>{
+  const rows=(global.__priceQueue?.stats?.().proxyStats||[]).filter(proxy=>!proxy.blocked&&proxy.success>0).map(proxy=>proxy.url.replace(/^https?:\/\//,''));
+  res.type('text/plain').setHeader('Content-Disposition','attachment; filename="working-proxies.txt"'); res.send(rows.join('\n')+(rows.length?'\n':''));
+});
+app.post('/api/admin/proxies/retest', requireAdmin, async (req,res)=>{
+  const url=String(req.body?.url||''); const manager=global.__priceQueue; const checked=await manager.validateProxies([url],{concurrency:1,timeoutMs:getPriceManagerConfig().timeoutMs});
+  if(checked.working){const current=manager.stats().proxyStats.map(proxy=>proxy.url);manager.replaceProxyPool([...current,...checked.workingUrls]);manager.applyValidationResults(checked.results);manager.persistProxyPool();}
+  res.json({ok:!!checked.working,result:checked.results[0]});
+});
+
 app.get('/api/admin/prices/status', requireStaff, (_req, res) => {
   const cached = db.prepare('SELECT COUNT(*) c FROM steam_prices').get().c;
   const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
@@ -2643,7 +3002,9 @@ app.get('/api/admin/prices/status', requireStaff, (_req, res) => {
     progress: PRICE_PROGRESS,
     cachedPrices: cached,
     catalogItems: CATALOG.length,
-    withPrice
+    withPrice,
+    speedHistory: PRICE_SPEED_HISTORY,
+    estimated: CATALOG.filter(item => item._isEstimated).length
   });
 });
 
@@ -2754,24 +3115,39 @@ app.get('/api/admin/proxies', requireStaff, (req, res) => {
   res.json({ count: stats.proxies || 0, proxies: stats.proxyStats || [], fileList, env: (process.env.PROXY_LIST||'').slice(0,500) });
 });
 
-app.post('/api/admin/proxies/add', requireAdmin, (req, res) => {
+app.post('/api/admin/proxies/add', requireAdmin, async (req, res) => {
   const url = String(req.body?.url || req.body?.proxy || '').trim();
   if (!url) return res.status(400).json({ error: 'Укажи прокси в формате ip:port или http://ip:port' });
-  const added = global.__priceQueue && global.__priceQueue.addProxy ? global.__priceQueue.addProxy(url) : false;
-  if (!added) return res.status(400).json({ error: 'Невалидный прокси или уже есть' });
-  try {
-    const txtPath = path.join(__dirname, 'data', 'proxies.txt');
-    fs.mkdirSync(path.dirname(txtPath), { recursive: true });
-    fs.appendFileSync(txtPath, '\n' + url.replace(/^https?:\/\//,'') + '\n');
-  } catch {}
-  adminLog(req.account, 'proxy_add', url, '');
-  res.json({ ok: true });
+  const priceQueue = global.__priceQueue;
+  if (!priceQueue?.validateProxies) return res.status(503).json({ error: 'Очередь цен недоступна' });
+  const checked = await priceQueue.validateProxies([url], { concurrency: 1, timeoutMs: 6000 });
+  if (!checked.working) {
+    const reason = checked.results?.[0]?.error || 'прокси не отвечает через Steam';
+    return res.status(400).json({ error: `Прокси отклонён: ${reason}` });
+  }
+  const current = priceQueue.stats().proxyStats.map(proxy => proxy.url);
+  priceQueue.replaceProxyPool([...current, ...checked.workingUrls]);
+  priceQueue.applyValidationResults(checked.results);
+  priceQueue.persistProxyPool();
+  adminLog(req.account, 'proxy_add', url, 'Проверен через Steam');
+  res.json({ ok: true, count: priceQueue.stats().proxies, latency: checked.results[0].latency });
 });
 
-app.post('/api/admin/proxies/reload', requireAdmin, (req, res) => {
-  const count = global.__priceQueue && global.__priceQueue.reloadProxies ? global.__priceQueue.reloadProxies() : 0;
-  adminLog(req.account, 'proxy_reload', '', `count=${count}`);
-  res.json({ ok: true, count });
+app.post('/api/admin/proxies/reload', requireAdmin, async (req, res) => {
+  try {
+    const priceQueue = global.__priceQueue;
+    const found = priceQueue?.reloadProxies ? priceQueue.reloadProxies() : 0;
+    if (!priceQueue?.validateCurrentProxies || !found) {
+      adminLog(req.account, 'proxy_reload', '', `found=${found} working=${found}`);
+      return res.json({ ok: true, found, count: found, rejected: 0 });
+    }
+    const config = getPriceManagerConfig();
+    const checked = await priceQueue.validateCurrentProxies({ concurrency: config.workers, timeoutMs: config.timeoutMs, persist: true });
+    adminLog(req.account, 'proxy_reload', '', `found=${found} working=${checked.working} rejected=${checked.rejected}`);
+    res.json({ ok: true, found, count: checked.working, rejected: checked.rejected });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Не удалось проверить прокси' });
+  }
 });
 
 app.post('/api/admin/proxies/fetch-free', requireAdmin, async (req, res) => {
@@ -2794,16 +3170,22 @@ app.post('/api/admin/proxies/fetch-free', requireAdmin, async (req, res) => {
     }
     fetched = [...new Set(fetched)].slice(0, 100);
     if (!fetched.length) return res.status(502).json({ error: 'Не удалось скачать бесплатные прокси, попробуй добавить вручную' });
-    const txtPath = path.join(__dirname, 'data', 'proxies.txt');
-    const jsonPath = path.join(__dirname, 'data', 'free-proxies.json');
+    const priceQueue = global.__priceQueue;
+    if (!priceQueue?.validateProxies) return res.status(503).json({ error: 'Очередь цен не запущена в процессе сервера' });
+    const wasPaused = !!priceQueue.stats().paused;
+    if (!wasPaused) priceQueue.pause();
+    let checked;
     try {
-      fs.mkdirSync(path.dirname(txtPath), { recursive: true });
-      fs.writeFileSync(txtPath, fetched.join('\n') + '\n');
-      fs.writeFileSync(jsonPath, JSON.stringify(fetched, null, 2));
-    } catch {}
-    const count = global.__priceQueue && global.__priceQueue.reloadProxies ? global.__priceQueue.reloadProxies() : 0;
-    adminLog(req.account, 'proxy_fetch_free', '', `fetched=${fetched.length} loaded=${count}`);
-    res.json({ ok: true, fetched: fetched.length, loaded: count, proxies: fetched.slice(0,20) });
+      const config = getPriceManagerConfig();
+      checked = await priceQueue.validateProxies(fetched, { concurrency: config.workers, timeoutMs: config.timeoutMs });
+      priceQueue.replaceProxyPool(checked.workingUrls);
+      priceQueue.applyValidationResults(checked.results);
+      priceQueue.persistProxyPool();
+    } finally {
+      if (!wasPaused) priceQueue.resume();
+    }
+    adminLog(req.account, 'proxy_fetch_free', '', `fetched=${fetched.length} working=${checked.working} rejected=${checked.rejected}`);
+    res.json({ ok: true, fetched: fetched.length, tested: checked.checked, loaded: checked.working, rejected: checked.rejected, proxies: checked.results.filter(item=>item.ok).slice(0,20) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2965,6 +3347,10 @@ function notifyStaffReply(userId, message) {
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ error: 'Маршрут не найден' });
+  }
+  // Неизвестные auth-адреса не должны попадать в SPA и выглядеть как рабочий вход.
+  if (req.path.startsWith('/auth/')) {
+    return res.status(404).send('Not found');
   }
   const base = path.basename(req.path);
   if (path.extname(req.path) || base.startsWith('.')) {

@@ -11,7 +11,6 @@ const isWindows = process.platform === 'win32';
 const args = process.argv.slice(2);
 const FORCE_SQLITE = args.includes('--sqlite');
 const FORCE_PG = args.includes('--pg');
-const NO_DEV = args.includes('--no-dev');
 
 function log(message) {
   console.log(message);
@@ -233,24 +232,11 @@ async function main() {
     env.DB_DRIVER = 'sqlite';
   }
 
-  const baseUrl = setting('BASE_URL');
-  const isLocal = !baseUrl || /localhost|127\.0\.0\.1/.test(baseUrl);
-  if (isLocal && !NO_DEV && setting('ALLOW_DEV_LOGIN') !== '0') {
-    env.ALLOW_DEV_LOGIN = '1';
-  }
-
   const port = Number(setting('PORT') || 3000);
   log('  ─────────────────────────────────────────');
   log(`  База данных: ${mode === 'postgres' ? 'PostgreSQL' : 'SQLite (файл data.sqlite)'}`);
   log(`  Кеш:         ${env.REDIS_ENABLED === '1' ? 'Redis' : 'память процесса'}`);
   log(`  Адрес:       http://localhost:${port}`);
-  if (env.ALLOW_DEV_LOGIN === '1') {
-    log(`  Вход без Steam: http://localhost:${port}/auth/dev`);
-    if (!setting('ADMIN_STEAMIDS')) {
-      log('  Подсказка: чтобы тестовый игрок стал админом, в .env укажите');
-      log('             ADMIN_STEAMIDS=76561190000000001');
-    }
-  }
   log('  ─────────────────────────────────────────');
   log('');
 

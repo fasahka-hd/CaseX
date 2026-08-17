@@ -1,3 +1,5 @@
+const PATH_LANGUAGE = ({ ru: 'RU', en: 'EN', ua: 'UA', kz: 'KZ', be: 'BE' })[location.pathname.split('/').filter(Boolean)[0]?.toLowerCase()] || 'RU';
+
 const S = {
   page: 'upgrade', me: null, inventory: [], inventoryFeed: [], catalog: [], cases: [], drops: [], online: 0,
   tab: 'inventory', from: null, to: null, chance: null, boost: 30, addBalance: 0, turbo: false, spinning: false,
@@ -7,10 +9,10 @@ const S = {
   paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0, paymentCurrency: 'RUB', currencyOpen: false,
   sellMode: false, sellSelected: new Set(), sortBy: 'new', sortOpen: false,
   targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
-  footerLang: 'RU', footerLangOpen: false,
+  footerLang: PATH_LANGUAGE, footerLangOpen: false,
   globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
-  chat: false, chatEmail: '', chatEmailReady: false, brand: 'КЕЙСЕР', telegram: 'https://t.me/',
-  notifications: [], unreadNotifications: 0
+  chat: false, chatEmail: '', chatEmailReady: false, ticketCategory: 'account', brand: 'КЕЙСЕР', telegram: 'https://t.me/', supportEmail:'support@caser.gg', marketingEmail:'marketing@caser.gg', siteBanner:null,
+  notifications: [], unreadNotifications: 0, cookieConsent: null
 };
 
 const CURRENCIES = [
@@ -28,9 +30,71 @@ const LANGS = [
   { code: 'EN', name: 'English', flag: '🇬🇧' },
   { code: 'UA', name: 'Українська', flag: '🇺🇦' },
   { code: 'KZ', name: 'Қазақша', flag: '🇰🇿' },
-  { code: 'BY', name: 'Беларуская', flag: '🇧🇾' }
+  { code: 'BE', name: 'Беларуская', flag: '🇧🇾' }
 ];
-const FLAG_CODES = { RU: 'ru', EN: 'gb', UA: 'ua', KZ: 'kz', BY: 'by' };
+const FLAG_CODES = { RU: 'ru', EN: 'gb', UA: 'ua', KZ: 'kz', BE: 'by' };
+const UI_TRANSLATIONS = {
+  EN: {
+    'КЕЙСЫ':'CASES','АПГРЕЙДЫ':'UPGRADES','НАГРАДЫ':'REWARDS','Баланс':'Balance','ПАНЕЛЬ':'PANEL','ВОЙТИ ЧЕРЕЗ STEAM':'SIGN IN WITH STEAM','ONLINE':'ONLINE',
+    'Лучший дроп':'Best drop','Отобразится после первой игры':'Appears after the first game','Лучший предмет в инвентаре':'Best item in inventory','Выведено':'Withdrawn','предмета':'items','Кейсы':'Cases','Апгрейды':'Upgrades','Продажи':'Sales',
+    'ПРЕДМЕТЫ':'ITEMS','ИСТОРИЯ':'HISTORY','ПРОДАТЬ ВСЕ':'SELL ALL','ОТМЕНА':'CANCEL','Персональный купон':'Personal coupon','ПРИМЕНИТЬ':'APPLY',
+    'ПОДДЕРЖКА':'SUPPORT','СОТРУДНИЧЕСТВО':'PARTNERSHIPS','НАВИГАЦИЯ':'NAVIGATION','Инвентарь':'Inventory','Награды':'Rewards','ОБЩИЕ ПОЛОЖЕНИЯ':'LEGAL',
+    'Пользовательское соглашение':'Terms of use','Политика конфиденциальности':'Privacy policy','Политика использования Cookie':'Cookie policy','Политика AML/KYC':'AML/KYC policy','Контакты':'Contacts',
+    'Онлайн':'Online','Всего игроков':'Total players','Открыто кейсов':'Cases opened','Сделано апгрейдов':'Upgrades made','Не аффилировано с Valve Corp.':'Not affiliated with Valve Corp.',
+    'Улучшай и собирай собственный инвентарь CS2.':'Upgrade and build your own CS2 inventory.','Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.':'CS2 item service. All item operations take place within the website.',
+    'Поддержка':'Support','Настройки':'Settings','Выйти':'Sign out','Пополнить баланс':'Add funds','Уведомления':'Notifications','Закрыть':'Close','Уведомлений пока нет':'No notifications yet','Мы используем Cookie':'We use cookies','Необходимые Cookie обеспечивают вход и безопасность. С вашего разрешения сайт также запомнит настройки интерфейса. Подробнее — в':'Necessary cookies provide sign-in and security. With your permission, the site will also remember interface preferences. Learn more in','Политике Cookie':'Cookie Policy','Отклонить':'Reject','Разрешить':'Allow','Настройки Cookie':'Cookie settings'
+  },
+  UA: {
+    'КЕЙСЫ':'КЕЙСИ','АПГРЕЙДЫ':'АПГРЕЙДИ','НАГРАДЫ':'НАГОРОДИ','Баланс':'Баланс','ПАНЕЛЬ':'ПАНЕЛЬ','ВОЙТИ ЧЕРЕЗ STEAM':'УВІЙТИ ЧЕРЕЗ STEAM','ONLINE':'ОНЛАЙН',
+    'Лучший дроп':'Найкращий дроп','Отобразится после первой игры':'З’явиться після першої гри','Лучший предмет в инвентаре':'Найкращий предмет в інвентарі','Выведено':'Виведено','предмета':'предмети','Кейсы':'Кейси','Апгрейды':'Апгрейди','Продажи':'Продажі',
+    'ПРЕДМЕТЫ':'ПРЕДМЕТИ','ИСТОРИЯ':'ІСТОРІЯ','ПРОДАТЬ ВСЕ':'ПРОДАТИ ВСЕ','ОТМЕНА':'СКАСУВАТИ','Персональный купон':'Персональний купон','ПРИМЕНИТЬ':'ЗАСТОСУВАТИ',
+    'ПОДДЕРЖКА':'ПІДТРИМКА','СОТРУДНИЧЕСТВО':'СПІВПРАЦЯ','НАВИГАЦИЯ':'НАВІГАЦІЯ','Инвентарь':'Інвентар','Награды':'Нагороди','ОБЩИЕ ПОЛОЖЕНИЯ':'ЗАГАЛЬНІ ПОЛОЖЕННЯ',
+    'Пользовательское соглашение':'Угода користувача','Политика конфиденциальности':'Політика конфіденційності','Политика использования Cookie':'Політика Cookie','Политика AML/KYC':'Політика AML/KYC','Контакты':'Контакти',
+    'Онлайн':'Онлайн','Всего игроков':'Усього гравців','Открыто кейсов':'Відкрито кейсів','Сделано апгрейдов':'Зроблено апгрейдів','Не аффилировано с Valve Corp.':'Не пов’язано з Valve Corp.',
+    'Улучшай и собирай собственный инвентарь CS2.':'Покращуй і збирай власний інвентар CS2.','Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.':'Ігровий сервіс предметів CS2. Усі операції виконуються всередині сайту.',
+    'Поддержка':'Підтримка','Настройки':'Налаштування','Выйти':'Вийти','Пополнить баланс':'Поповнити баланс','Уведомления':'Сповіщення','Закрыть':'Закрити','Уведомлений пока нет':'Сповіщень поки немає','Мы используем Cookie':'Ми використовуємо Cookie','Необходимые Cookie обеспечивают вход и безопасность. С вашего разрешения сайт также запомнит настройки интерфейса. Подробнее — в':'Необхідні Cookie забезпечують вхід і безпеку. З вашого дозволу сайт також запам’ятає налаштування інтерфейсу. Докладніше — у','Политике Cookie':'Політиці Cookie','Отклонить':'Відхилити','Разрешить':'Дозволити','Настройки Cookie':'Налаштування Cookie'
+  },
+  BE: {
+    'КЕЙСЫ':'КЕЙСЫ','АПГРЕЙДЫ':'АПГРЭЙДЫ','НАГРАДЫ':'УЗНАГАРОДЫ','Баланс':'Баланс','ПАНЕЛЬ':'ПАНЭЛЬ','ВОЙТИ ЧЕРЕЗ STEAM':'УВАЙСЦІ ПРАЗ STEAM','ONLINE':'АНЛАЙН',
+    'Лучший дроп':'Лепшы дроп','Отобразится после первой игры':'З’явіцца пасля першай гульні','Лучший предмет в инвентаре':'Лепшы прадмет у інвентары','Выведено':'Выведзена','предмета':'прадметы','Кейсы':'Кейсы','Апгрейды':'Апгрэйды','Продажи':'Продажы',
+    'ПРЕДМЕТЫ':'ПРАДМЕТЫ','ИСТОРИЯ':'ГІСТОРЫЯ','ПРОДАТЬ ВСЕ':'ПРАДАЦЬ УСЁ','ОТМЕНА':'СКАСАВАЦЬ','Персональный купон':'Персанальны купон','ПРИМЕНИТЬ':'УЖЫЦЬ',
+    'ПОДДЕРЖКА':'ПАДТРЫМКА','СОТРУДНИЧЕСТВО':'СУПРАЦОЎНІЦТВА','НАВИГАЦИЯ':'НАВІГАЦЫЯ','Инвентарь':'Інвентар','Награды':'Узнагароды','ОБЩИЕ ПОЛОЖЕНИЯ':'АГУЛЬНЫЯ ПАЛАЖЭННІ',
+    'Пользовательское соглашение':'Карыстальніцкае пагадненне','Политика конфиденциальности':'Палітыка прыватнасці','Политика использования Cookie':'Палітыка Cookie','Политика AML/KYC':'Палітыка AML/KYC','Контакты':'Кантакты',
+    'Онлайн':'Анлайн','Всего игроков':'Усяго гульцоў','Открыто кейсов':'Адкрыта кейсаў','Сделано апгрейдов':'Зроблена апгрэйдаў','Не аффилировано с Valve Corp.':'Не звязана з Valve Corp.',
+    'Улучшай и собирай собственный инвентарь CS2.':'Паляпшай і збірай уласны інвентар CS2.','Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.':'Гульнявы сэрвіс прадметаў CS2. Усе аперацыі выконваюцца ўнутры сайта.',
+    'Поддержка':'Падтрымка','Настройки':'Налады','Выйти':'Выйсці','Пополнить баланс':'Папоўніць баланс','Уведомления':'Апавяшчэнні','Закрыть':'Закрыць','Уведомлений пока нет':'Апавяшчэнняў пакуль няма','Мы используем Cookie':'Мы выкарыстоўваем Cookie','Необходимые Cookie обеспечивают вход и безопасность. С вашего разрешения сайт также запомнит настройки интерфейса. Подробнее — в':'Неабходныя Cookie забяспечваюць уваход і бяспеку. З вашага дазволу сайт таксама запомніць налады інтэрфейсу. Падрабязней — у','Политике Cookie':'Палітыцы Cookie','Отклонить':'Адхіліць','Разрешить':'Дазволіць','Настройки Cookie':'Налады Cookie'
+  },
+  KZ: {
+    'КЕЙСЫ':'КЕЙСТЕР','АПГРЕЙДЫ':'АПГРЕЙДТЕР','НАГРАДЫ':'СЫЙЛЫҚТАР','Баланс':'Баланс','ПАНЕЛЬ':'ПАНЕЛЬ','ВОЙТИ ЧЕРЕЗ STEAM':'STEAM АРҚЫЛЫ КІРУ','ONLINE':'ОНЛАЙН',
+    'Лучший дроп':'Үздік дроп','Отобразится после первой игры':'Бірінші ойыннан кейін көрінеді','Лучший предмет в инвентаре':'Инвентарьдағы үздік зат','Выведено':'Шығарылды','предмета':'зат','Кейсы':'Кейстер','Апгрейды':'Апгрейдтер','Продажи':'Сатылымдар',
+    'ПРЕДМЕТЫ':'ЗАТТАР','ИСТОРИЯ':'ТАРИХ','ПРОДАТЬ ВСЕ':'БАРЛЫҒЫН САТУ','ОТМЕНА':'БАС ТАРТУ','Персональный купон':'Жеке купон','ПРИМЕНИТЬ':'ҚОЛДАНУ',
+    'ПОДДЕРЖКА':'ҚОЛДАУ','СОТРУДНИЧЕСТВО':'ЫНТЫМАҚТАСТЫҚ','НАВИГАЦИЯ':'НАВИГАЦИЯ','Инвентарь':'Инвентарь','Награды':'Сыйлықтар','ОБЩИЕ ПОЛОЖЕНИЯ':'ЖАЛПЫ ЕРЕЖЕЛЕР',
+    'Пользовательское соглашение':'Пайдаланушы келісімі','Политика конфиденциальности':'Құпиялылық саясаты','Политика использования Cookie':'Cookie саясаты','Политика AML/KYC':'AML/KYC саясаты','Контакты':'Байланыстар',
+    'Онлайн':'Онлайн','Всего игроков':'Барлық ойыншылар','Открыто кейсов':'Ашылған кейстер','Сделано апгрейдов':'Жасалған апгрейдтер','Не аффилировано с Valve Corp.':'Valve Corp. компаниясымен байланысты емес.',
+    'Улучшай и собирай собственный инвентарь CS2.':'CS2 инвентарыңды жақсартып, жина.','Игровой сервис предметов CS2. Все операции с предметами выполняются внутри сайта.':'CS2 заттарына арналған ойын сервисі. Барлық операциялар сайт ішінде орындалады.',
+    'Поддержка':'Қолдау','Настройки':'Баптаулар','Выйти':'Шығу','Пополнить баланс':'Балансты толтыру','Уведомления':'Хабарландырулар','Закрыть':'Жабу','Уведомлений пока нет':'Хабарландырулар әзірге жоқ','Мы используем Cookie':'Біз Cookie файлдарын қолданамыз','Необходимые Cookie обеспечивают вход и безопасность. С вашего разрешения сайт также запомнит настройки интерфейса. Подробнее — в':'Қажетті Cookie файлдары кіру мен қауіпсіздікті қамтамасыз етеді. Рұқсатыңызбен сайт интерфейс баптауларын да есте сақтайды. Толығырақ —','Политике Cookie':'Cookie саясатында','Отклонить':'Қабылдамау','Разрешить':'Рұқсат ету','Настройки Cookie':'Cookie баптаулары'
+  }
+};
+function translateDom(root) {
+  const dictionary = UI_TRANSLATIONS[S.footerLang];
+  document.documentElement.lang = ({ RU:'ru', EN:'en', UA:'uk', BE:'be', KZ:'kk' })[S.footerLang] || 'ru';
+  if (!dictionary || !root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement?.closest('script,style')) continue;
+    const raw = node.nodeValue;
+    const value = raw.trim();
+    if (dictionary[value]) node.nodeValue = raw.replace(value, dictionary[value]);
+  }
+  for (const element of root.querySelectorAll('[placeholder],[title],[aria-label]')) {
+    for (const attr of ['placeholder','title','aria-label']) {
+      const value = element.getAttribute(attr);
+      if (value && dictionary[value]) element.setAttribute(attr, dictionary[value]);
+    }
+  }
+}
 function flagIcon(code) {
   const lang = LANGS.find(item => item.code === code);
   const emoji = lang ? lang.flag : '';
@@ -112,6 +176,7 @@ async function boot() {
     ]);
     S.brand = config.brand;
     S.telegram = config.telegram;
+    S.supportEmail=config.supportEmail||S.supportEmail;S.marketingEmail=config.marketingEmail||S.marketingEmail;S.siteBanner=config.banner||null;
     S.me = me;
     S.drops = drops;
     S.online = online.online;
@@ -119,6 +184,7 @@ async function boot() {
     S.cases = cases.cases || [];
     S.globalStats = stats;
     S.turbo = localStorage.getItem('keyser-turbo') === '1';
+    S.cookieConsent = localStorage.getItem('keyser-cookie-consent');
     if (me.authenticated) {
       const [inventory, profile] = await Promise.all([api('/api/inventory'), api('/api/profile')]);
       S.inventory = inventory.items || [];
@@ -170,6 +236,7 @@ function listen() {
       const n = JSON.parse(event.data);
       if (n.audience === 'guests' && S.me?.authenticated) return;
       if (n.audience === 'authenticated' && !S.me?.authenticated) return;
+      if (n.audience === 'staff' && !['admin','support'].includes(S.me?.user?.role)) return;
       if (!S.notifications.some(x => x.id === n.id)) {
         S.notifications.unshift(n);
         S.notifications = S.notifications.slice(0, 20);
@@ -183,6 +250,7 @@ function listen() {
     const filtered = list.filter(n => {
       if (n.audience === 'guests' && S.me?.authenticated) return false;
       if (n.audience === 'authenticated' && !S.me?.authenticated) return false;
+      if (n.audience === 'staff' && !['admin','support'].includes(S.me?.user?.role)) return false;
       return true;
     });
     S.notifications = filtered.slice(0, 20);
@@ -239,7 +307,7 @@ function header() {
       ${S.me?.authenticated && (S.me.user.role === 'admin' || S.me.user.role === 'support')
         ? `<a class="admin-link ${S.me.user.role === 'support' ? 'is-support' : ''}" href="/admin" title="${S.me.user.role === 'support' ? 'Панель поддержки' : 'Админ-панель'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7.5 3v5.4c0 4.4-3 8.3-7.5 9.6-4.5-1.3-7.5-5.2-7.5-9.6V6L12 3Z"/><path d="M9.2 12.2l2 2 3.6-3.9"/></svg><span>ПАНЕЛЬ</span></a>` : ''}
       ${S.me?.authenticated
-        ? `<button id="notification-trigger" class="notification-trigger" type="button" onclick="openNotifications()" aria-label="Уведомления" style="position:relative"><img src="/chunks/notificationIcon.svg" alt="">${S.unreadNotifications ? `<span style="position:absolute;top:-4px;right:-4px;background:#eb4b4b;color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:grid;place-items:center;padding:0 3px">${S.unreadNotifications > 9 ? '9+' : S.unreadNotifications}</span>` : ''}</button>
+        ? `<button id="notification-trigger" class="notification-trigger" type="button" onclick="openNotifications()" aria-label="Уведомления" style="position:relative"><img src="/chunks/notificationIcon.svg" alt="">${S.unreadNotifications ? `<span style="position:absolute;top:4px;right:4px;background:#eb4b4b;color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:grid;place-items:center;padding:0 3px">${S.unreadNotifications > 9 ? '9+' : S.unreadNotifications}</span>` : ''}</button>
            <button id="profile-trigger" class="profile-trigger" type="button" onclick="go('profile')" aria-label="${esc(S.me.user.name || 'Личный профиль')}">${avatarImage(S.me.user)}</button>`
         : `<button class="steam auth-login-button" onclick="login()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>`}
     </div>
@@ -444,7 +512,7 @@ async function sellSelectedItems() {
   if (!S.sellSelected.size) return;
   const items = S.inventory.filter(item => S.sellSelected.has(String(item.assetid)));
   const total = items.reduce((sum, item) => sum + Number(item.priceCents || 0), 0);
-  if (!confirm(`Продать выбранные предметы (${items.length} шт.) за ${money(total)}?`)) return;
+  if (!await customConfirm(`Продать выбранные предметы (${items.length} шт.) за ${money(total)}?`, { title: 'Продажа предметов', confirmText: 'Продать', danger: true })) return;
   let sold = 0;
   let amount = 0;
   for (const item of items) {
@@ -640,8 +708,8 @@ function profilePage() {
   const user = profile.user || S.me.user;
   const avatar = avatarImage(user);
   const best = profile.bestDrop
-    ? `<div class="profile-best-item">${skinCard(profile.bestDrop, { className: 'profile-best-skin' })}<span>Лучший предмет в инвентаре</span></div>`
-    : '<div class="profile-best-empty"><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""><span>Отобразится<br>после первой игры</span></div>';
+    ? `<div class="profile-best-item"><div class="profile-best-copy"><strong>${esc(profile.bestDrop.name || profile.bestDrop.itemName || 'Лучший дроп')}</strong><span>${esc(profile.bestDrop.skin || profile.bestDrop.marketName || 'Лучший предмет в инвентаре')}</span><b>${coinPrice(profile.bestDrop.priceCents)}</b></div><div class="profile-best-art">${image(profile.bestDrop.icon || profile.bestDrop.itemIcon, profile.bestDrop.name || profile.bestDrop.itemName || '')}</div></div>`
+    : '<div class="profile-best-empty"><span>Отобразится после первой игры</span><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""></div>';
   let content = '';
   if (S.profileTab === 'items') {
     const items = sortList(S.inventory);
@@ -678,9 +746,9 @@ function siteFooter() {
     <div class="footer-divider footer-mobile-divider"></div>
     <div class="footer-main">
       <div class="footer-brand"><div><img src="/chunks/logo.svg" alt=""><b>${esc(S.brand)}</b></div><p>Улучшай и собирай собственный инвентарь CS2.</p></div>
-      <div class="footer-column footer-contacts"><div><b>ПОДДЕРЖКА</b><a href="mailto:support@caser.gg">support@caser.gg</a></div><div><b>СОТРУДНИЧЕСТВО</b><a href="mailto:marketing@caser.gg">marketing@caser.gg</a></div></div>
+      <div class="footer-column footer-contacts"><div><b>ПОДДЕРЖКА</b><a href="mailto:${esc(S.supportEmail)}">${esc(S.supportEmail)}</a></div><div><b>СОТРУДНИЧЕСТВО</b><a href="mailto:${esc(S.marketingEmail)}">${esc(S.marketingEmail)}</a></div></div>
       <div class="footer-column"><b>НАВИГАЦИЯ</b><button onclick="openInventory()">Инвентарь</button><button onclick="go('cases')">Кейсы</button><button onclick="go('upgrade')">Апгрейды</button><button onclick="go('rewards')">Награды</button></div>
-      <div class="footer-column"><b>ОБЩИЕ ПОЛОЖЕНИЯ</b><a href="/tos.html">Пользовательское соглашение</a><a href="/tos.html">Политика конфиденциальности</a><a href="/tos.html">Политика использования Cookie</a><a href="/tos.html">Политика AML/KYC</a><a href="/tos.html">Контакты</a></div>
+      <div class="footer-column"><b>ОБЩИЕ ПОЛОЖЕНИЯ</b><a href="/tos.html">Пользовательское соглашение</a><a href="/privacy.html">Политика конфиденциальности</a><a href="/cookies.html">Политика использования Cookie</a><a href="/aml.html">Политика AML/KYC</a><a href="/tos.html#contacts">Контакты</a></div>
       <div class="footer-language"><div class="lang-select">
         <button type="button" onclick="toggleFooterLang()">${flagIcon(S.footerLang)}<b>${esc(S.footerLang)}</b><i class="lang-chevron ${S.footerLangOpen ? 'open' : ''}">${chevronIcon()}</i></button>
         ${S.footerLangOpen ? `<div class="lang-menu">${LANGS.map(item => `<button type="button" class="${item.code === S.footerLang ? 'active' : ''}" onclick="setFooterLang('${item.code}')">${flagIcon(item.code)}<b>${esc(item.name)}</b>${item.code === S.footerLang ? '<i class="lang-check">✓</i>' : ''}</button>`).join('')}</div>` : ''}
@@ -697,6 +765,34 @@ function siteFooter() {
   </footer>`;
 }
 
+
+function siteBanner() {
+  const banner=S.siteBanner;if(!banner)return '';
+  return `<aside class="site-announcement tone-${esc(banner.tone||'info')}"><div><b>${esc(banner.title)}</b><span>${esc(banner.body)}</span></div>${banner.link?`<a href="${esc(banner.link)}">Подробнее</a>`:''}</aside>`;
+}
+function frozenAccountOverlay(){
+  if(!S.me?.authenticated||!S.me.user.frozen)return '';
+  return `<div class="frozen-account"><section><span>АККАУНТ ЗАМОРОЖЕН</span><h2>Доступ временно ограничен</h2><p>${esc(S.me.user.freezeReason||'Обратитесь в поддержку для уточнения причины.')}</p><button onclick="openChat()">Открыть поддержку</button><button class="secondary" onclick="logout()">Выйти</button></section></div>`;
+}
+
+function cookieConsentBanner() {
+  if (S.cookieConsent === 'accepted' || S.cookieConsent === 'rejected') return '';
+  return `<aside class="cookie-consent" role="dialog" aria-live="polite" aria-label="Настройки Cookie">
+    <div class="cookie-consent-icon">C</div>
+    <div class="cookie-consent-copy"><strong>Мы используем Cookie</strong><p>Необходимые Cookie обеспечивают вход и безопасность. С вашего разрешения сайт также запомнит настройки интерфейса. Подробнее — в <a href="/cookies.html">Политике Cookie</a>.</p></div>
+    <div class="cookie-consent-actions"><button type="button" class="cookie-reject" onclick="rejectCookies()">Отклонить</button><button type="button" class="cookie-accept" onclick="acceptCookies()">Разрешить</button></div>
+  </aside>`;
+}
+function acceptCookies() {
+  S.cookieConsent = 'accepted';
+  localStorage.setItem('keyser-cookie-consent', 'accepted');
+  document.querySelector('.cookie-consent')?.remove();
+}
+function rejectCookies() {
+  S.cookieConsent = 'rejected';
+  localStorage.setItem('keyser-cookie-consent', 'rejected');
+  document.querySelector('.cookie-consent')?.remove();
+}
 function authConsentModal() {
   const ready = S.ageAccepted && S.termsAccepted;
   const check = value => value ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.2 3.1 3.1L13 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : '';
@@ -711,8 +807,6 @@ function authConsentModal() {
         <div class="auth-check-row" onclick="toggleConsent('age')"><button type="button" role="checkbox" data-consent="age" aria-checked="${S.ageAccepted}" class="auth-checkbox ${S.ageAccepted ? 'checked' : ''}">${check(S.ageAccepted)}</button><span>Подтверждаю, что мне больше 18 лет</span></div>
         <div class="auth-check-row" onclick="toggleConsent('terms')"><button type="button" role="checkbox" data-consent="terms" aria-checked="${S.termsAccepted}" class="auth-checkbox ${S.termsAccepted ? 'checked' : ''}">${check(S.termsAccepted)}</button><span>Принимаю <a href="/tos.html" onclick="event.stopPropagation()" target="_blank">правила и условия</a> использования сайта</span></div>
         <button class="auth-steam-button" data-auth-submit ${ready ? '' : 'disabled'} onclick="confirmSteamLogin()">${steamIcon()}<span>ВОЙТИ ЧЕРЕЗ STEAM</span></button>
-        <button class="auth-steam-button" style="background:linear-gradient(135deg,#2d2d2d,#1a1a2e);margin-top:8px;border:1px solid rgba(255,255,255,.1)" onclick="devLogin()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg><span>ВОЙТИ БЕЗ STEAM (если Steam заблокирован)</span></button>
-        <p style="margin:12px 0 0;font-size:12px;color:#8d97a4;text-align:center">Steam выдал <strong>Access Denied / Reference #18</strong>? Это Steam блокирует твой IP — входи через Steam с VPN/другого интернета, или используй кнопку «БЕЗ STEAM» для теста.</p>
       </div>
     </div>
   </div>`;
@@ -766,7 +860,7 @@ function chatModal() {
   return `<div class="support-chat-window" role="dialog" aria-modal="false" aria-label="Чат поддержки">
     <div class="support-chat-header"><div class="support-agent"><img src="/chunks/logo.svg" alt=""><i></i></div><div><h3>Вопросы? Напишите нам в чат!</h3><span>Наша команда сейчас онлайн</span></div><button onclick="closeChat()" aria-label="Закрыть">×</button></div>
     <div class="support-chat-body" id="chatbody"><div class="support-welcome">Как мы можем вам помочь с ${esc(S.brand)}?</div></div>
-    <form class="support-composer" onsubmit="sendChat(event)"><input id="chatinput" maxlength="2000" placeholder="Отправьте сообщение..."><button aria-label="Отправить">➤</button></form>
+    <div class="support-category"><span>Тема обращения</span><select id="chat-category" onchange="setTicketCategory(this.value)"><option value="payments" ${S.ticketCategory==='payments'?'selected':''}>Платежи</option><option value="withdrawal" ${S.ticketCategory==='withdrawal'?'selected':''}>Вывод</option><option value="account" ${S.ticketCategory==='account'?'selected':''}>Аккаунт</option><option value="errors" ${S.ticketCategory==='errors'?'selected':''}>Ошибки</option></select></div><form class="support-composer" onsubmit="sendChat(event)"><input id="chatinput" maxlength="2000" placeholder="Отправьте сообщение..."><button aria-label="Отправить">➤</button></form>
     ${emailGate}
   </div>`;
 }
@@ -787,8 +881,8 @@ function openInventory() {
 let lastPageRendered = null;
 function render() {
   const app = $('#app');
-  const html = header() + `<div class="layout">${sidebar()}<main class="main"><div class="page" data-page="${esc(S.page || '')}">${pageContent()}</div></main></div>${siteFooter()}
-    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}`;
+  const html = header() + `<div class="layout">${sidebar()}<main class="main">${siteBanner()}<div class="page" data-page="${esc(S.page || '')}">${pageContent()}</div></main></div>${siteFooter()}
+    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}${cookieConsentBanner()}${frozenAccountOverlay()}`;
   const pageChanged = S.page !== lastPageRendered;
   lastPageRendered = S.page;
   if (window.morphdom) {
@@ -815,6 +909,7 @@ function render() {
       pageEl.classList.add('page-enter');
     }
   }
+  translateDom(app);
   ensureImages();
   if (S.chat) loadChat();
 }
@@ -1249,9 +1344,10 @@ function toggleFooterLang() {
   render();
 }
 function setFooterLang(code) {
-  S.footerLang = code;
-  S.footerLangOpen = false;
-  render();
+  const normalized = String(code || 'RU').toUpperCase();
+  const route = ({ RU:'ru', EN:'en', UA:'ua', KZ:'kz', BE:'be' })[normalized] || 'ru';
+  localStorage.setItem('keyser-language', normalized);
+  location.assign(`/${route}`);
 }
 
 function chatDayLabel(ts) {
@@ -1290,7 +1386,9 @@ async function loadChat() {
     return;
   }
   try {
-    const rows = await api('/api/support/messages');
+    const data = await api('/api/support/messages');
+    const rows = Array.isArray(data) ? data : (data.messages || []);
+    if (data.ticket?.category) { S.ticketCategory=data.ticket.category; const categorySelect=document.querySelector('#chat-category'); if(categorySelect)categorySelect.value=S.ticketCategory; }
     const body = $('#chatbody');
     body.innerHTML = rows.length
       ? chatBubbles(rows)
@@ -1307,7 +1405,7 @@ async function sendChat(event) {
   if (!message) return;
   try {
     await api('/api/support/messages', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message })
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, category: document.querySelector('#chat-category')?.value || S.ticketCategory || 'account' })
     });
     input.value = '';
     loadChat();
@@ -1315,9 +1413,15 @@ async function sendChat(event) {
 }
 
 function go(page) {
-  S.page = page;
-  if (page !== 'case') { S.caseResult = null; S.rouletteItems = []; }
-  render();
+  if (page === S.page) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  const current = document.querySelector('.page');
+  current?.classList.add('page-leave');
+  setTimeout(() => {
+    S.page = page;
+    if (page !== 'case') { S.caseResult = null; S.rouletteItems = []; }
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, current ? 150 : 0);
 }
 function sideTab(tab) { S.tab = tab; render(); }
 function setProfileTab(tab) { S.profileTab = tab; render(); }
@@ -1342,9 +1446,6 @@ function toggleConsent(type) {
 function confirmSteamLogin() {
   if (!S.ageAccepted || !S.termsAccepted) return;
   location.href = '/auth/steam';
-}
-function devLogin() {
-  location.href = '/auth/dev';
 }
 async function logout() { await api('/auth/logout', { method: 'POST' }); location.reload(); }
 async function openSettings() {
@@ -1471,6 +1572,7 @@ async function submitSupportEmail() {
   } catch (error) { toast(error.message); }
 }
 function closeChat() { S.chat = false; render(); }
+function setTicketCategory(value){S.ticketCategory=value;}
 function toast(text, type = '') {
   const root = $('#toast-root');
   root.innerHTML = `<div class="toast ${type}">${esc(text)}</div>`;
@@ -1479,30 +1581,42 @@ function toast(text, type = '') {
 
 Object.assign(window, {
   go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
-  login, closeAuthModal, toggleConsent, confirmSteamLogin, devLogin, logout,
+  login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
-  openChat, submitSupportEmail, closeChat, sendChat,
+  openChat, submitSupportEmail, closeChat, sendChat, setTicketCategory,
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
-  closeUpgradeResult, closeCaseReveal, openInventory
+  closeUpgradeResult, closeCaseReveal, openInventory, acceptCookies, rejectCookies
 });
-if (typeof window.openNotifications !== 'function') {
-  window.openNotifications = async () => {
-    try {
-      if (!S.notifications.length) {
-        const data = await api('/api/notifications');
-        S.notifications = (data.notifications || []).slice(0,20);
-      }
-      if (!S.notifications.length) { toast('Уведомлений нет'); return; }
-      const body = S.notifications.slice(0, 15).map(n => `<div style="padding:10px 0;border-bottom:1px solid rgba(86,168,255,.12)"><b style="color:#56A8FF">${esc(n.title)}</b><div style="color:#dce5f1;margin-top:4px;white-space:pre-wrap">${esc(n.body)}</div><small style="color:#8d97a4">${new Date(n.createdAt).toLocaleString('ru-RU')}</small></div>`).join('');
-      const html = `<div class="notifications-modal" style="position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:rgba(0,0,0,.65);backdrop-filter:blur(3px)" onclick="if(event.target===this)this.remove()"><div style="background:linear-gradient(180deg,#1b2436,#12151f);border:1px solid rgba(86,168,255,.25);border-radius:10px;padding:20px;max-width:520px;width:92%;max-height:82vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)"><h3 style="margin:0 0 12px;color:#fff">Уведомления <span style="font-weight:400;color:#8d97a4;font-size:13px">(${S.notifications.length})</span></h3>${body}<button class="upgrade" style="margin-top:14px;width:100%" onclick="this.closest('.notifications-modal').remove()">Закрыть</button></div></div>`;
-      document.body.insertAdjacentHTML('beforeend', html);
-      const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
-      S.notifications.forEach(n => seen.add(n.id));
-      localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-100)));
-      S.unreadNotifications = 0;
-      render();
-    } catch (e) { toast(e.message, 'error'); }
-  };
+function closeNotifications() {
+  document.querySelector('[data-notifications-overlay]')?.remove();
 }
+async function openNotifications() {
+  try {
+    const data = await api('/api/notifications');
+    const list = (data.notifications || []).filter(n => {
+      if (n.audience === 'guests' && S.me?.authenticated) return false;
+      if (n.audience === 'authenticated' && !S.me?.authenticated) return false;
+      if (n.audience === 'staff' && !['admin','support'].includes(S.me?.user?.role)) return false;
+      return true;
+    });
+    S.notifications = list.slice(0, 20);
+    closeNotifications();
+    const body = S.notifications.length
+      ? S.notifications.map(n => `<article class="notification-item notification-${esc(n.kind || 'info')}"><b>${esc(n.title)}</b><p>${esc(n.body)}</p><time>${new Date(n.createdAt).toLocaleString('ru-RU')}</time></article>`).join('')
+      : '<div class="notifications-empty">Уведомлений пока нет</div>';
+    document.body.insertAdjacentHTML('beforeend', `<div class="notifications-overlay" data-notifications-overlay><div class="notifications-panel fixed-notifications" role="dialog" aria-modal="true" aria-label="Уведомления"><div class="notifications-head"><span>Уведомления</span><div class="notifications-count">${S.notifications.length}</div></div><div class="notifications-list">${body}</div><div class="notifications-foot"><button type="button" onclick="closeNotifications()" aria-label="Закрыть"><img src="/chunks/arrowDownIcon.svg" alt=""></button></div></div></div>`);
+    const overlay = document.querySelector('[data-notifications-overlay]');
+    translateDom(overlay);
+    overlay?.addEventListener('click', event => { if (event.target === overlay) closeNotifications(); });
+    const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
+    S.notifications.forEach(n => seen.add(n.id));
+    localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-100)));
+    S.unreadNotifications = 0;
+    const badge = document.querySelector('#notification-trigger span');
+    if (badge) badge.remove();
+  } catch (error) { toast(error.message, 'error'); }
+}
+window.addEventListener('keydown', event => { if (event.key === 'Escape') closeNotifications(); });
+Object.assign(window, { openNotifications, closeNotifications });
 boot();
