@@ -11,9 +11,7 @@ let MAX_PROXY_FAILURES = 3;
 let BLOCK_429_MS = 30 * 60 * 1000;
 const RETRY_AFTER_429 = 10 * 1000;
 const MAX_RETRY_429 = 60 * 1000;
-const CACHE_FILE = path.join(process.cwd(), 'data', 'steam-price-cache.json');
 const PROXY_FILE_TXT = path.join(process.cwd(), 'data', 'proxies.txt');
-const PROXY_FILE_JSON = path.join(process.cwd(), 'data', 'free-proxies.json');
 
 const nativeFetch = global.fetch;
 const cache = new Map();
@@ -28,31 +26,60 @@ let consecutive429 = 0;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function loadDiskCache() {
+let dbAdapter = null;
+let attached = false;
+function attachDb(db) {
+  if (attached || !db || !db.prepare) return;
+  attached = true;
+  dbAdapter = db;
   try {
-    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
-    const data = JSON.parse(raw);
+    db.exec('CREATE TABLE IF NOT EXISTS price_cache(url TEXT PRIMARY KEY, payload TEXT NOT NULL, cached_at INTEGER NOT NULL)');
+    db.exec('CREATE TABLE IF NOT EXISTS proxy_pool(url TEXT PRIMARY KEY)');
+  } catch (e) {
+    console.warn('[steam-price-queue] Не удалось создать таблицы кеша:', e.message);
+  }
+  try {
+    const rows = db.prepare('SELECT url, payload, cached_at FROM price_cache').all();
     let loaded = 0;
-    for (const [url, entry] of Object.entries(data)) {
-      if (entry && Number(entry.at) > 0 && entry.data && Date.now() - Number(entry.at) <= STALE_TTL) {
-        cache.set(url, entry);
-        loaded++;
+    const now = Date.now();
+    for (const row of rows) {
+      if (!row || !row.payload) continue;
+      const at = Number(row.cached_at || 0);
+      if (at > 0 && now - at <= STALE_TTL) {
+        try { cache.set(row.url, JSON.parse(row.payload)); loaded++; } catch {}
       }
     }
-    console.log(`[steam-price-queue] Загружено сохранённых цен: ${loaded}`);
+    if (loaded) console.log(`[steam-price-queue] Загружено сохранённых цен: ${loaded}`);
   } catch (e) {
-    if (e.code !== 'ENOENT') console.warn(`[steam-price-queue] Ошибка загрузки кеша: ${e.message}`);
+    console.warn(`[steam-price-queue] Ошибка загрузки кеша из базы: ${e.message}`);
   }
-}
-function saveDiskCache() {
-  if (!dirty) return;
   try {
-    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(cache)));
+    const urls = db.prepare('SELECT url FROM proxy_pool').all().map(row => row.url);
+    if (urls.length) {
+      proxyPool = urls.map(url => ({ url, lastAt: 0, fails: 0, blockedUntil: 0, success: 0, busy: false, lastError: '' }));
+      console.log(`[steam-price-queue] Загружено прокси из базы: ${proxyPool.length}`);
+    }
+  } catch (e) {
+    console.warn(`[steam-price-queue] Ошибка загрузки прокси из базы: ${e.message}`);
+  }
+  setInterval(flushDb, 10000).unref?.();
+  process.once('exit', () => { try { flushDb(); } catch {} });
+  process.once('SIGINT', () => { try { flushDb(); } catch {} process.exit(0); });
+  process.once('SIGTERM', () => { try { flushDb(); } catch {} process.exit(0); });
+}
+function flushDb() {
+  if (!dbAdapter || !dirty) return;
+  try {
+    const insert = dbAdapter.prepare('INSERT INTO price_cache(url,payload,cached_at) VALUES(?,?,?) ON CONFLICT(url) DO UPDATE SET payload=excluded.payload, cached_at=excluded.cached_at');
+    const run = dbAdapter.transaction(() => {
+      for (const [url, entry] of cache) {
+        if (entry && Number(entry.at) > 0 && entry.data) insert.run(url, JSON.stringify(entry), Number(entry.at));
+      }
+    });
+    run();
     dirty = false;
   } catch (e) {
-    console.warn(`[steam-price-queue] Не удалось сохранить кеш: ${e.message}`);
+    console.warn(`[steam-price-queue] Не удалось сохранить кеш в базу: ${e.message}`);
   }
 }
 
@@ -73,13 +100,6 @@ function loadProxiesFromEnv() {
         if (!p || p.startsWith('#')) continue;
         list.push(p);
       }
-    }
-  } catch {}
-  try {
-    if (fs.existsSync(PROXY_FILE_JSON)) {
-      const j = JSON.parse(fs.readFileSync(PROXY_FILE_JSON, 'utf8'));
-      const arr = Array.isArray(j) ? j : (j.proxies || []);
-      for (const p of arr) if (p) list.push(String(p).trim());
     }
   } catch {}
   const normalized = [];
@@ -240,11 +260,15 @@ function applyValidationResults(results) {
 }
 
 function persistProxyPool() {
+  if (!dbAdapter) return;
   try {
-    fs.mkdirSync(path.dirname(PROXY_FILE_TXT), { recursive: true });
-    const plain = proxyPool.map(proxy => proxy.url.replace(/^https?:\/\//, ''));
-    fs.writeFileSync(PROXY_FILE_TXT, plain.join('\n') + (plain.length ? '\n' : ''));
-    fs.writeFileSync(PROXY_FILE_JSON, JSON.stringify(plain, null, 2));
+    const remove = dbAdapter.prepare('DELETE FROM proxy_pool');
+    const insert = dbAdapter.prepare('INSERT INTO proxy_pool(url) VALUES(?)');
+    const run = dbAdapter.transaction(() => {
+      remove.run();
+      for (const proxy of proxyPool) insert.run(proxy.url);
+    });
+    run();
   } catch (error) {
     console.warn('[steam-price-queue] Не удалось сохранить проверенные прокси:', error.message);
   }
@@ -344,14 +368,14 @@ async function runWorker() {
       const data = await response.clone().json();
       cache.set(task.url, { at: Date.now(), data });
       dirty = true;
-      if (cache.size % 20 === 0 || task.foreground) saveDiskCache();
+      if (cache.size % 20 === 0 || task.foreground) flushDb();
       if (task.foreground && task.resolve) task.resolve(makeResponse(data, 'miss'));
     } catch (error) {
       if (task.foreground && task.resolve) task.resolve(response);
     }
     if (proxyObj) proxyObj.busy = false;
   }
-  saveDiskCache();
+  flushDb();
 }
 
 global.fetch = function steamAwareFetch(input, init) {
@@ -369,13 +393,23 @@ global.__priceQueue = {
   paused: false,
   pause() { this.paused = true; console.log('[steam-price-queue] PAUSED'); },
   resume() { this.paused = false; console.log('[steam-price-queue] RESUMED'); if (queue.length) runQueue().catch(()=>{}); },
-  clear() { cache.clear(); dirty = true; saveDiskCache(); console.log('[steam-price-queue] CACHE CLEARED'); },
+  clear() {
+    cache.clear();
+    if (dbAdapter) {
+      try { dbAdapter.prepare('DELETE FROM price_cache').run(); } catch {}
+      dirty = false;
+    } else {
+      dirty = true;
+    }
+    console.log('[steam-price-queue] CACHE CLEARED');
+  },
   stats() { return { config:{workers:WORKER_LIMIT,timeoutMs:PROXY_TIMEOUT,maxFailures:MAX_PROXY_FAILURES,block429Minutes:Math.round(BLOCK_429_MS/60000),minInterval:MIN_INTERVAL}, size: cache.size, queueLen: queue.length, activeWorkers, paused: this.paused, proxies: proxyPool.length, validating, validation: validationSummary, proxyStats: proxyPool.map(p=>({url:p.url, fails:p.fails, success:p.success, blocked: p.blockedUntil>Date.now(), blockedUntil:p.blockedUntil||0, lastError:p.lastError||'', lastLatency:p.lastLatency||0, busy:!!p.busy})), consecutive429 }; },
   reloadProxies() { buildProxyPool(); return proxyPool.length; },
   validateProxies,
   validateCurrentProxies,
   replaceProxyPool,
   persistProxyPool,
+  attachDb,
   applyValidationResults,
   configure(options={}) { WORKER_LIMIT=Math.max(1,Math.min(24,Number(options.workers||WORKER_LIMIT))); PROXY_TIMEOUT=Math.max(1500,Math.min(15000,Number(options.timeoutMs||PROXY_TIMEOUT))); MAX_PROXY_FAILURES=Math.max(1,Math.min(20,Number(options.maxFailures||MAX_PROXY_FAILURES))); BLOCK_429_MS=Math.max(60000,Math.min(24*60*60*1000,Number(options.block429Minutes||30)*60000)); MIN_INTERVAL=Math.max(100,Math.min(10000,Number(options.minInterval||MIN_INTERVAL))); return this.stats().config; },
   addProxy(url) {
@@ -392,9 +426,4 @@ global.__priceQueue = {
   }
 };
 
-loadDiskCache();
-setInterval(saveDiskCache, 10000).unref?.();
-process.once('exit', saveDiskCache);
-process.once('SIGINT', () => { saveDiskCache(); });
-process.once('SIGTERM', () => { saveDiskCache(); });
 console.log('[steam-price-queue] Persistent cache enabled; MIN_INTERVAL=' + MIN_INTERVAL + 'ms, proxies=' + proxyPool.length);

@@ -358,13 +358,17 @@ function steamMarketName(name, wear) {
 }
 function parseRubles(s) {
   if (!s) return 0;
-  let cleaned = String(s).replace(/\u00a0/g, ' ').trim();
-  if (/,\d{1,2}\s*(pуб|руб|RUB)?/i.test(cleaned) && cleaned.includes(',')) {
-    cleaned = cleaned.replace(/[^\d,]/g, '').replace(',', '.');
-  } else {
-    cleaned = cleaned.replace(/[^\d.]/g, '');
+  const cleaned = String(s).replace(/\u00a0/g, ' ').trim();
+  const match = cleaned.match(/[\d\s.,]+/);
+  if (!match) return 0;
+  let num = match[0].replace(/\s+/g, '');
+  if (num.includes(',') && num.includes('.')) {
+    num = num.lastIndexOf(',') > num.lastIndexOf('.') ? num.replace(/\./g, '').replace(',', '.') : num.replace(/,/g, '');
+  } else if (num.includes(',')) {
+    const parts = num.split(',');
+    num = parts.length === 2 && parts[1].length === 2 ? parts.join('.') : parts.join('');
   }
-  const n = Number.parseFloat(cleaned);
+  const n = Number.parseFloat(num);
   return Number.isFinite(n) ? Math.max(0, Math.round(n * 100)) : 0;
 }
 const STEAM_HEADERS = {
@@ -374,6 +378,14 @@ const STEAM_HEADERS = {
   'Referer': 'https://steamcommunity.com/market/'
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+function isHttpUrl(value) {
+  try {
+    const u = new URL(String(value || ''));
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 function recordPriceHistory(marketHashName, price, source) {
   if (!price) return;
@@ -562,11 +574,6 @@ async function runPool(tasks, concurrency, onResult) {
 }
 
 
-function lookupPriceSync(name, wear) {
-  const fake = { name, wear };
-  return cachedPriceForItem(fake).price || cachedSteamPrice(steamMarketName(name, wear)).price;
-}
-
 function dynamicCatalogItem(skin, priceCents, forcedId) {
   const [weapon, skinName = ''] = String(skin.name || '').split('|');
   const rarityKey = RARITY_KEY_BY_NAME[skin.rarity && skin.rarity.name] || 'milspec';
@@ -721,7 +728,7 @@ async function refreshSteamPrices(limit = 0) {
 
 const DEFAULT_CASES = [
   {
-    id: 'starter', name: 'СТАРТОВЫЙ КЕЙС', priceCents: 0, once: true,
+    id: 'starter', name: 'СТАРТОВЫЙ КЕЙС', priceCents: 0, once: true, enabled: true,
     description: 'Один бесплатный кейс для нового игрока',
     image: '',
     max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
@@ -731,7 +738,7 @@ const DEFAULT_CASES = [
     ]
   },
   {
-    id: 'neon', name: 'NEON CASE', priceCents: 24900,
+    id: 'neon', name: 'NEON CASE', priceCents: 24900, enabled: true,
     description: 'Яркие скины разных редкостей',
     image: '',
     max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
@@ -741,7 +748,7 @@ const DEFAULT_CASES = [
     ]
   },
   {
-    id: 'classified', name: 'CLASSIFIED', priceCents: 99900,
+    id: 'classified', name: 'CLASSIFIED', priceCents: 99900, enabled: true,
     description: 'Повышенный шанс на розовую редкость',
     image: '',
     max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
@@ -751,7 +758,7 @@ const DEFAULT_CASES = [
     ]
   },
   {
-    id: 'legend', name: 'LEGEND', priceCents: 299900,
+    id: 'legend', name: 'LEGEND', priceCents: 299900, enabled: true,
     description: 'Редкие красные и контрабандные предметы',
     image: '',
     max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
@@ -823,7 +830,7 @@ const RATE_WINDOW = Number(process.env.RATE_WINDOW || 60);
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/')) return next();
   if (req.path === '/api/events') return next();
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'local';
+  const ip = req.ip || 'local';
   const count = cache.hit(`rl:${ip}`, RATE_WINDOW);
   res.setHeader('X-RateLimit-Limit', RATE_LIMIT);
   res.setHeader('X-RateLimit-Remaining', Math.max(0, RATE_LIMIT - count));
@@ -833,6 +840,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use('/api/admin/cases/upload', express.json({ limit: '6mb' }));
 app.use(express.json({ limit: '128kb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use((req, res, next) => {
@@ -865,7 +873,6 @@ for (const { url, dir } of STATIC_DIRS) {
 }
 const STATIC_ROOT_FILES = new Set([
   '/favicon.svg',
-  '/manifest.json',
   '/index.html',
   '/tos.html',
   '/privacy.html',
@@ -885,6 +892,7 @@ console.log(`[db] ${db.describe()}`);
 setTimeout(() => console.log(`[cache] ${cache.describe()}`), 300);
 const { createQueue } = require('./lib/queue');
 const queue = createQueue({ cache });
+if (global.__priceQueue && global.__priceQueue.attachDb) global.__priceQueue.attachDb(db);
 db.exec(`
   CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1335,6 +1343,14 @@ function currentUser(req) {
   `).get(token, Date.now()) || null;
   } catch { return null; }
 }
+function isSecureRequest(res) {
+  const req = res && res.req;
+  if (BASE_URL.startsWith('https://')) return true;
+  if (!req) return false;
+  if (req.secure) return true;
+  const proto = String((req.headers && req.headers['x-forwarded-proto']) || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
 function setCookie(res, token) {
   const parts = [
     `session=${encodeURIComponent(token)}`,
@@ -1344,18 +1360,23 @@ function setCookie(res, token) {
     'Max-Age=2592000'
   ];
 
-  if (BASE_URL.startsWith('https://')) parts.push('Secure');
+  if (isSecureRequest(res)) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 function clearCookie(res, token) {
   if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(token);
   const parts = ['session=', 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
-  if (BASE_URL.startsWith('https://')) parts.push('Secure');
+  if (isSecureRequest(res)) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 function broadcast(type, payload) {
+  const audience = payload && payload.audience ? payload.audience : null;
   const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const entry of onlineClients.values()) {
+    if (!entry.res) continue;
+    if (audience === 'staff' && entry.role !== 'admin' && entry.role !== 'support') continue;
+    if (audience === 'authenticated' && !entry.user) continue;
+    if (audience === 'guests' && entry.user) continue;
     try { entry.res.write(data); } catch {}
   }
 }
@@ -1376,6 +1397,7 @@ function steamLogin(req) {
   });
   return `https://steamcommunity.com/openid/login?${params}`;
 }
+const usedOpenIdNonces = new Map();
 async function verifySteam(req) {
   // Принимаем return_to как по BASE_URL, так и по реальному хосту запроса.
   // Это чинит "OpenID return_to mismatch", когда сайт открыт по IP/домену,
@@ -1470,6 +1492,14 @@ async function verifySteam(req) {
     console.error('[steam] verification failed:', response && response.status, (text || '').slice(0, 500));
     throw new Error('Steam OpenID verification failed');
   }
+  const nonce = String(req.query['openid.response_nonce'] || '');
+  if (!nonce) throw new Error('OpenID nonce missing');
+  const nonceNow = Date.now();
+  for (const key of usedOpenIdNonces.keys()) {
+    if (nonceNow - usedOpenIdNonces.get(key) > 3600000) usedOpenIdNonces.delete(key);
+  }
+  if (usedOpenIdNonces.has(nonce)) throw new Error('OpenID nonce already used');
+  usedOpenIdNonces.set(nonce, nonceNow);
   const match = String(req.query.openid_claimed_id || req.query['openid.claimed_id'] || '').match(/\/id\/(\d{17})$/);
   if (!match) throw new Error('SteamID not found');
   return match[1];
@@ -1618,36 +1648,40 @@ function addLiveDrop(userId, userName, item, source, now = Date.now()) {
   `).run(userId || null, userName, item.name, item.icon, item.priceCents, item.rarity, item.rarityColor, item.rarityRank, source, now);
   return dropPayload(db.prepare('SELECT * FROM live_drops WHERE id = ?').get(result.lastInsertRowid));
 }
-function caseView(caseData, userId) {
+function caseState(caseData, userId) {
+  const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
   const opened = userId && caseData.once
     ? !!db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(userId, caseData.id)
     : false;
-  const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
-  let enabled = override ? !!override.enabled : !!caseData.enabled;
   const now = Date.now();
+  let enabled = override ? !!override.enabled : !!caseData.enabled;
   const notYet = caseData.starts_at && now < Number(caseData.starts_at);
   const expired = caseData.ends_at && now > Number(caseData.ends_at);
   let totalOpened = 0;
   try { totalOpened = db.prepare('SELECT COUNT(*) AS c FROM case_openings WHERE case_id = ?').get(caseData.id).c; } catch {}
   const maxReached = caseData.max_openings > 0 && totalOpened >= Number(caseData.max_openings);
   if (notYet || expired || maxReached) enabled = false;
-  let basePrice = override && override.price_cents != null ? Number(override.price_cents) : Number(caseData.priceCents || 0);
-  let discount = Number(caseData.discount_percent || 0);
-  let finalPrice = basePrice;
-  if (discount > 0) finalPrice = Math.round(basePrice * (100 - Math.min(90, discount)) / 100);
+  const basePrice = override && override.price_cents != null ? Number(override.price_cents) : Number(caseData.priceCents || 0);
+  const discount = Number(caseData.discount_percent || 0);
+  const finalPrice = discount > 0 ? Math.round(basePrice * (100 - Math.min(90, discount)) / 100) : basePrice;
+  return { override, opened, enabled, totalOpened, basePrice, discount, finalPrice };
+}
+
+function caseView(caseData, userId) {
+  const state = caseState(caseData, userId);
   return {
     id: caseData.id,
     name: caseData.name,
     description: caseData.description,
-    priceCents: finalPrice,
-    basePriceCents: basePrice,
-    discountPercent: discount,
+    priceCents: state.finalPrice,
+    basePriceCents: state.basePrice,
+    discountPercent: state.discount,
     once: !!caseData.once,
-    enabled,
-    available: !opened && enabled,
+    enabled: state.enabled,
+    available: !state.opened && state.enabled,
     image: caseData.image || '',
     maxOpenings: Number(caseData.max_openings || 0),
-    totalOpened,
+    totalOpened: state.totalOpened,
     levelMin: Number(caseData.level_min || 0),
     startsAt: caseData.starts_at ? Number(caseData.starts_at) : null,
     endsAt: caseData.ends_at ? Number(caseData.ends_at) : null,
@@ -1752,11 +1786,16 @@ app.get('/api/stats', (_, res) => {
   cache.set('stats:global', payload, 15);
   res.json(payload);
 });
+const profileCache = new Map();
 app.get('/api/me', async (req, res) => {
   let account = currentUser(req);
   if (!account) return res.json({ authenticated: false });
   if (!account.avatar || /^Steam \d{6}$/.test(account.name)) {
-    const fresh = await steamProfile(account.steamid);
+    const cached = profileCache.get(account.steamid);
+    const fresh = cached && Date.now() - cached.at < 10 * 60 * 1000
+      ? cached.profile
+      : await steamProfile(account.steamid);
+    profileCache.set(account.steamid, { at: Date.now(), profile: fresh });
     if (fresh.avatar || !/^Steam \d{6}$/.test(fresh.name)) {
       const displayName = account.nickname_custom ? account.name : fresh.name;
       db.prepare('UPDATE users SET name = ?, avatar = ?, updated_at = ? WHERE id = ?')
@@ -1791,7 +1830,19 @@ app.get('/api/users/:id/profile', (req, res) => {
   const stats={casesOpened:db.prepare('SELECT COUNT(*) c FROM case_openings WHERE user_id=?').get(userId).c,upgradesMade:db.prepare('SELECT COUNT(*) c FROM upgrade_rounds WHERE user_id=?').get(userId).c,soldItems:db.prepare('SELECT COUNT(*) c FROM inventory_sales WHERE user_id=?').get(userId).c};
   const withdrawnCents=db.prepare('SELECT COALESCE(SUM(amount_cents),0) s FROM inventory_sales WHERE user_id=?').get(userId).s;
   let tags=[];try{tags=JSON.parse(user.tags||'[]')}catch{}
-  res.json({ user:{id:user.id,steamid:showSteamIdentity?user.steamid:'',name:user.name,avatar:showSteamIdentity?user.avatar:'',role:roleOf(user),tags,createdAt:user.created_at}, items,history,upgrades,bestDrop,stats,withdrawnCents,activeItems:items.length,privacy,isOwn:!!own,staffView:!!staff });
+  const canSeePrivate = own || staff;
+  const publicUser = {
+    id: user.id,
+    steamid: showSteamIdentity ? user.steamid : '',
+    name: user.name,
+    avatar: showSteamIdentity ? user.avatar : '',
+    tags: canSeePrivate ? tags : []
+  };
+  if (canSeePrivate) {
+    publicUser.role = roleOf(user);
+    publicUser.createdAt = user.created_at;
+  }
+  res.json({ user: publicUser, items, history, upgrades, bestDrop, stats, withdrawnCents: canSeePrivate ? withdrawnCents : 0, activeItems: items.length, privacy, isOwn: !!own, staffView: !!staff });
 });
 
 app.get('/api/profile', (req, res) => {
@@ -1852,7 +1903,7 @@ app.get('/api/profile', (req, res) => {
   res.json({
     user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar, role: roleOf(account) },
     balanceCents: account.balance_cents,
-    withdrawnCents: 0,
+    withdrawnCents: sold.total,
     activeItems,
     bestDrop: bestDrop ? { ...withSteamIcon(bestDrop), assetid: String(bestDrop.assetid) } : null,
     history: historyRows,
@@ -1949,24 +2000,22 @@ app.post('/api/cases/open', (req, res) => {
   if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
   const caseData = CASES_BY_ID.get(String(req.body?.caseId || ''));
   if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
-  const override = db.prepare('SELECT * FROM case_overrides WHERE case_id = ?').get(caseData.id);
-  if (override && !override.enabled) return res.status(403).json({ error: 'Кейс временно отключён' });
-  const casePrice = override && override.price_cents != null ? Number(override.price_cents) : caseData.priceCents;
-
   try {
     const result = db.transaction(() => {
-      if (caseData.once && db.prepare('SELECT 1 FROM case_openings WHERE user_id = ? AND case_id = ? LIMIT 1').get(account.id, caseData.id)) {
-        throw new Error('Стартовый кейс уже был открыт');
-      }
+      const state = caseState(caseData, account.id);
+      if (state.override && !state.override.enabled) throw new Error('Кейс временно отключён');
+      if (!state.enabled) throw new Error('Кейс недоступен');
+      if (state.opened) throw new Error('Стартовый кейс уже был открыт');
+      const casePrice = state.finalPrice;
+      const now = Date.now();
       if (casePrice > 0) {
         const charged = db.prepare(`
           UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
           WHERE id = ? AND balance_cents >= ?
-        `).run(casePrice, Date.now(), account.id, casePrice);
+        `).run(casePrice, now, account.id, casePrice);
         if (!charged.changes) throw new Error('Недостаточно средств на балансе');
       }
       const won = pickWeighted(caseData.contents, account);
-      const now = Date.now();
       const inventoryId = insertInventoryItem(account.id, won, `case:${caseData.id}`, now);
       db.prepare('INSERT INTO case_openings(user_id,case_id,inventory_item_id,cost_cents,created_at) VALUES(?,?,?,?,?)')
         .run(account.id, caseData.id, inventoryId, casePrice, now);
@@ -2078,13 +2127,14 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
   const account = currentUser(req);
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'local';
+  const ip = req.ip || 'local';
   const ua = req.headers['user-agent'] || '';
   const id = crypto.randomBytes(8).toString('hex');
   const entry = {
     id,
     res,
     user: account ? { id: account.id, name: account.name, avatar: account.avatar, steamid: account.steamid } : null,
+    role: account ? roleOf(account) : null,
     ip,
     ua,
     country: req.headers['cf-ipcountry'] || req.headers['x-country'] || '',
@@ -2096,19 +2146,22 @@ app.get('/api/events', (req, res) => {
   };
   onlineClients.set(id, entry);
   broadcast('online', { online: onlineCount() });
+  const heartbeat = setInterval(() => { try { res.write(':hb\n\n'); } catch {} }, 25000);
   req.on('close', () => {
+    clearInterval(heartbeat);
     onlineClients.delete(id);
     broadcast('online', { online: onlineCount() });
   });
 });
 app.get('/api/online', (_, res) => res.json({ online: onlineCount() }));
 app.get('/api/admin/online', requireStaff, (req, res) => {
+  const admin = isAdmin(req.account);
   const list = uniqueOnlineClients().map(c => ({
     id: c.id,
     user: c.user,
-    ip: c.ip,
-    ua: c.ua,
-    country: c.country,
+    ip: admin ? c.ip : '',
+    ua: admin ? c.ua : '',
+    country: admin ? c.country : '',
     connectedAt: c.connectedAt,
     lastAction: c.lastAction,
     lastPath: c.lastPath,
@@ -2368,6 +2421,29 @@ app.get('/api/admin/cases', requireStaff, (_, res) => {
   });
 });
 
+app.post('/api/admin/cases/upload', requireAdmin, (req, res) => {
+  try {
+    const filename = String(req.body?.filename || '').trim().replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 80) || `case-${Date.now()}.png`;
+    const data = String(req.body?.data || req.body?.base64 || '');
+    if (!data) return res.status(400).json({ error: 'Нет данных файла' });
+    let base64 = data;
+    if (base64.includes(',')) base64 = base64.split(',').pop();
+    const buffer = Buffer.from(base64, 'base64');
+    if (buffer.length > 4 * 1024 * 1024) return res.status(400).json({ error: 'Файл слишком большой (макс 4MB)' });
+    const ext = path.extname(filename).toLowerCase();
+    if (!['.png','.jpg','.jpeg','.webp'].includes(ext)) return res.status(400).json({ error: 'Разрешены только png/jpg/webp' });
+    ensureCasesDir();
+    const safeName = filename.replace(/[^a-z0-9_.-]/gi, '_');
+    const fullPath = path.join(__dirname, 'static', 'cases', safeName);
+    fs.writeFileSync(fullPath, buffer);
+    const url = `/static/cases/${safeName}`;
+    adminLog(req.account, 'case_image_upload', safeName, `${buffer.length} bytes`);
+    res.json({ ok: true, url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/cases/:id', requireAdmin, (req, res) => {
   const caseData = CASES_BY_ID.get(String(req.params.id));
   if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
@@ -2464,29 +2540,6 @@ app.delete('/api/admin/cases/:id', requireAdmin, (req, res) => {
     refreshCasesCache();
     adminLog(req.account, 'case_delete', id, '');
     res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/admin/cases/upload', requireAdmin, (req, res) => {
-  try {
-    const filename = String(req.body?.filename || '').trim().replace(/[^a-z0-9_.-]+/gi, '_').slice(0, 80) || `case-${Date.now()}.png`;
-    const data = String(req.body?.data || req.body?.base64 || '');
-    if (!data) return res.status(400).json({ error: 'Нет данных файла' });
-    let base64 = data;
-    if (base64.includes(',')) base64 = base64.split(',').pop();
-    const buffer = Buffer.from(base64, 'base64');
-    if (buffer.length > 4 * 1024 * 1024) return res.status(400).json({ error: 'Файл слишком большой (макс 4MB)' });
-    const ext = path.extname(filename).toLowerCase();
-    if (!['.png','.jpg','.jpeg','.webp','.svg'].includes(ext)) return res.status(400).json({ error: 'Разрешены только png/jpg/webp/svg' });
-    ensureCasesDir();
-    const safeName = filename.replace(/[^a-z0-9_.-]/gi, '_');
-    const fullPath = path.join(__dirname, 'static', 'cases', safeName);
-    fs.writeFileSync(fullPath, buffer);
-    const url = `/static/cases/${safeName}`;
-    adminLog(req.account, 'case_image_upload', safeName, `${buffer.length} bytes`);
-    res.json({ ok: true, url });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2748,10 +2801,11 @@ app.get('/api/admin/logs', requireStaff, (req, res) => {
   const memory = process.memoryUsage();
   const actions = db.prepare('SELECT DISTINCT action FROM admin_logs ORDER BY action').all().map(r=>r.action);
   const admins = db.prepare('SELECT DISTINCT admin_name AS name FROM admin_logs ORDER BY admin_name').all().map(r=>r.name);
+  const admin = isAdmin(req.account);
   res.json({
     logs,
     filters: { admins, actions },
-    infra: {
+    infra: admin ? {
       database: db.describe(),
       databaseDriver: db.driver,
       cache: cache.describe(),
@@ -2761,8 +2815,8 @@ app.get('/api/admin/logs', requireStaff, (req, res) => {
       recentJobs: queue.recent(),
       failedJobs: queue.failures(),
       rateLimit: `${process.env.RATE_LIMIT || 120} запросов / ${process.env.RATE_WINDOW || 60} c`
-    },
-    system: {
+    } : null,
+    system: admin ? {
       uptimeSeconds: Math.round(process.uptime()),
       memoryMb: Math.round(memory.rss / 1048576),
       heapMb: Math.round(memory.heapUsed / 1048576),
@@ -2773,7 +2827,7 @@ app.get('/api/admin/logs', requireStaff, (req, res) => {
         try { return Math.round(fs.statSync(DB_PATH).size / 1048576 * 10) / 10; } catch { return 0; }
       })(),
       startedAt: Date.now() - Math.round(process.uptime() * 1000)
-    }
+    } : null
   });
 });
 
@@ -2816,7 +2870,7 @@ app.post('/api/support/messages', (req, res) => {
   })();
   addTicketHistory(account.id, null, 'message', '', message.slice(0,120));
   queue.publish('support.notify', { userId: account.id, message, createdAt: now });
-  broadcast('support-ticket', { userId:account.id, userName:account.name, category, priority:'normal', message:message.slice(0,120), createdAt:now });
+  broadcast('support-ticket', { userId:account.id, userName:account.name, category, priority:'normal', message:message.slice(0,120), createdAt:now, audience:'staff' });
   res.json({ id: Number(result.lastInsertRowid), message, createdAt: now });
 });
 
@@ -2905,12 +2959,14 @@ app.get('/api/admin/site', requireStaff, (_req, res) => {
 });
 app.post('/api/admin/site', requireAdmin, (req, res) => {
   const brand = String(req.body?.brand || BRAND_NAME).trim().slice(0,60);
-  const telegram = String(req.body?.telegram || TELEGRAM_URL).trim().slice(0,240);
+  const telegramRaw = String(req.body?.telegram || TELEGRAM_URL).trim().slice(0,240);
+  const telegram = isHttpUrl(telegramRaw) ? telegramRaw : TELEGRAM_URL;
   const supportEmail = String(req.body?.supportEmail || '').trim().slice(0,160);
   const marketingEmail = String(req.body?.marketingEmail || '').trim().slice(0,160);
+  const bannerLinkRaw = String(req.body?.banner?.link || '').slice(0,300);
   const banner = req.body?.banner && typeof req.body.banner === 'object' ? {
     enabled: !!req.body.banner.enabled, title:String(req.body.banner.title||'').slice(0,120), body:String(req.body.banner.body||'').slice(0,500),
-    link:String(req.body.banner.link||'').slice(0,300), tone:['info','warning','danger','success'].includes(req.body.banner.tone)?req.body.banner.tone:'info'
+    link: bannerLinkRaw && !isHttpUrl(bannerLinkRaw) ? '' : bannerLinkRaw, tone:['info','warning','danger','success'].includes(req.body.banner.tone)?req.body.banner.tone:'info'
   } : null;
   settingSet('site_brand', brand); settingSet('site_telegram', telegram); settingSet('site_support_email', supportEmail); settingSet('site_marketing_email', marketingEmail); settingSet('site_banner', JSON.stringify(banner));
   adminLog(req.account,'site_config',brand,banner?.enabled?'Баннер включён':'Баннер выключен');
@@ -3081,8 +3137,6 @@ app.post('/api/admin/cleanup', requireAdmin, (req, res) => {
       const r = db.prepare('DELETE FROM steam_prices WHERE updated_at < ?').run(before);
       deleted += r.changes;
       try {
-        const cacheFile = path.join(__dirname, 'data', 'steam-price-cache.json');
-        if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
         if (global.__priceQueue && global.__priceQueue.clear) global.__priceQueue.clear();
       } catch {}
     }
@@ -3112,8 +3166,6 @@ app.post('/api/admin/prices/queue/resume', requireAdmin, (req, res) => {
 });
 app.post('/api/admin/prices/queue/clear', requireAdmin, (req, res) => {
   try {
-    const cacheFile = path.join(__dirname, 'data', 'steam-price-cache.json');
-    if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
     if (global.__priceQueue && global.__priceQueue.clear) global.__priceQueue.clear();
     db.prepare('DELETE FROM steam_prices').run();
     cache.del('catalog:public');
@@ -3384,10 +3436,12 @@ app.use((req, res) => {
 app.use((error, req, res, _next) => {
   console.error('[error]', error && error.stack ? error.stack : error);
   if (res.headersSent) return;
+  const status = error && Number(error.status || error.statusCode);
   if (req.path.startsWith('/api/')) {
+    if (status >= 400 && status < 500) return res.status(status).json({ error: error.message || 'Некорректный запрос' });
     return res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
-  res.status(500).send('Внутренняя ошибка сервера');
+  res.status(status >= 400 && status < 500 ? status : 500).send('Внутренняя ошибка сервера');
 });
 
 (async () => {
