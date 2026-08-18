@@ -1,6 +1,5 @@
 'use strict';
 
-// Queue must be initialized in the web-server process (launch.js starts it as a child).
 require('./scripts/steam-market-queue');
 
 const express = require('express');
@@ -395,14 +394,6 @@ function recordPriceHistory(marketHashName, price, source) {
     const changePercent = previous?.price ? (Number(price) - Number(previous.price)) / Number(previous.price) * 100 : 0;
     db.prepare('INSERT INTO steam_price_history(market_hash_name,price,source,change_percent,created_at) VALUES(?,?,?,?,?)')
       .run(marketHashName, price, source, changePercent, Date.now());
-    const threshold = Math.max(5, Number(settingGetRaw('price_alert_percent','35')) || 35);
-    if (previous && Math.abs(changePercent) >= threshold) {
-      const title = 'Резкое изменение цены';
-      const body = `${marketHashName}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(1)}%`;
-      const result = db.prepare(`INSERT INTO notifications(title,body,kind,audience,created_at,expires_at,sent_at) VALUES(?,?,?,?,?,?,?)`)
-        .run(title, body, 'price_alert', 'staff', Date.now(), Date.now()+24*3600000, Date.now());
-      broadcast('notify', { id:Number(result.lastInsertRowid), title, body, audience:'staff', createdAt:Date.now() });
-    }
   } catch (_) {}
 }
 
@@ -444,13 +435,16 @@ async function fetchSkinportPrice(marketHashName) {
   return price;
 }
 
-async function fetchSteamPriceRaw(marketHashName) {
-  const url = `https://steamcommunity.com/market/priceoverview/?appid=730&currency=5&market_hash_name=${encodeURIComponent(marketHashName)}`;
+async function fetchSteamPriceRaw(marketHashName, forceFresh = false) {
+  const refresh = forceFresh ? `&refresh=${Math.floor(Date.now() / 300000)}` : '';
+  const url = `https://steamcommunity.com/market/priceoverview/?appid=730&currency=5&market_hash_name=${encodeURIComponent(marketHashName)}${refresh}`;
   try {
     const res = await fetch(url, { headers: STEAM_HEADERS, signal: AbortSignal.timeout(15000) });
     if (res.status === 429) return { __rateLimited: true };
     if (!res.ok) return null;
-    return await res.json();
+    const data = await res.json();
+    if (data && typeof data === 'object') data.__cacheState = res.headers.get('x-steam-price-cache') || 'live';
+    return data;
   } catch (e) {
     return null;
   }
@@ -461,11 +455,15 @@ async function waitForRateLimit() {
   const now = Date.now();
   if (now < rateLimitedUntil) await sleep(rateLimitedUntil - now);
 }
-async function fetchSteamPriceSingle(marketHashName) {
+async function fetchSteamPriceSingle(marketHashName, forceFresh = false) {
   if (!marketHashName) return 0;
   await waitForRateLimit();
   try {
-    const data = await fetchSteamPriceRaw(marketHashName);
+    let data = await fetchSteamPriceRaw(marketHashName, forceFresh);
+    if (data?.__cacheState === 'stale') {
+      const fresh = await fetchSteamPriceRaw(marketHashName, true);
+      if (fresh?.success) data = fresh;
+    }
     if (data && data.__rateLimited) {
       rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + 30000);
       return 0;
@@ -476,14 +474,16 @@ async function fetchSteamPriceSingle(marketHashName) {
       const volume = parseInt(String(data.volume || '0').replace(/[^\d]/g, ''), 10) || 0;
       const price = lowest || median;
       if (price > 0) {
-        try {
-          db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
-          VALUES (?, ?, ?, ?, 'RUB', 'steam', ?)
-          ON CONFLICT(market_hash_name) DO UPDATE SET lowest_price=excluded.lowest_price,
-            median_price=excluded.median_price, volume=excluded.volume, updated_at=excluded.updated_at`)
-          .run(marketHashName, lowest, median, volume, Date.now());
-        } catch {}
-        recordPriceHistory(marketHashName, price, 'steam');
+        if (data.__cacheState !== 'stale') {
+          try {
+            db.prepare(`INSERT INTO steam_prices(market_hash_name, lowest_price, median_price, volume, currency, source, updated_at)
+            VALUES (?, ?, ?, ?, 'RUB', 'steam', ?)
+            ON CONFLICT(market_hash_name) DO UPDATE SET lowest_price=excluded.lowest_price,
+              median_price=excluded.median_price, volume=excluded.volume, updated_at=excluded.updated_at`)
+            .run(marketHashName, lowest, median, volume, Date.now());
+          } catch {}
+          recordPriceHistory(marketHashName, price, 'steam');
+        }
         return price;
       }
       try {
@@ -505,7 +505,7 @@ async function fetchSteamPriceSingle(marketHashName) {
 }
 async function fetchPriceForItem(item) {
   const names = getMarketNamesForItem(item);
-  const source = settingGetRaw('price_source','auto');
+  const source = settingGetRaw('price_source','steam');
   for (const marketName of names) {
     if (source === 'skinport') {
       const price = await fetchSkinportPrice(marketName); if (price > 0) return price;
@@ -517,11 +517,35 @@ async function fetchPriceForItem(item) {
   }
   return 0;
 }
+const catalogPriceRefreshes = new Map();
+async function refreshCatalogItemPrice(item, steamOnly = false) {
+  const key = `${String(item?.catalogId || item?.id || '')}:${steamOnly ? 'steam' : 'configured'}`;
+  if (!item || !key) return 0;
+  if (catalogPriceRefreshes.has(key)) return catalogPriceRefreshes.get(key);
+  const load = async () => {
+    if (!steamOnly) return fetchPriceForItem(item);
+    for (const marketName of getMarketNamesForItem(item)) {
+      const price = await fetchSteamPriceSingle(marketName, true);
+      if (price > 0) return price;
+    }
+    return 0;
+  };
+  const pending = load().then(price => {
+    if (price > 0) {
+      item.priceCents = price;
+      item._isEstimated = false;
+      cache.del('catalog:public');
+    }
+    return price;
+  }).finally(() => catalogPriceRefreshes.delete(key));
+  catalogPriceRefreshes.set(key, pending);
+  return pending;
+}
 async function fetchSteamPrice(marketHashName) {
   if (!marketHashName) return 0;
   return await fetchSteamPriceSingle(marketHashName);
 }
-function cachedSteamPrice(marketHashName, maxAgeMs = 7 * 24 * 3600 * 1000) {
+function cachedSteamPrice(marketHashName, maxAgeMs = 30 * 60 * 1000) {
   try {
     const row = db.prepare('SELECT lowest_price, median_price, updated_at FROM steam_prices WHERE market_hash_name = ?').get(marketHashName);
     if (!row) return { hit: false, price: 0 };
@@ -574,8 +598,15 @@ async function runPool(tasks, concurrency, onResult) {
 }
 
 
+function preferredWearForSkin(skin) {
+  const available = new Set((Array.isArray(skin?.wears) ? skin.wears : []).map(wear => String(wear?.name || '')));
+  const full = ['Field-Tested', 'Minimal Wear', 'Factory New', 'Well-Worn', 'Battle-Scarred'].find(wear => available.has(wear));
+  return WEAR_SHORT[full] || '';
+}
+
 function dynamicCatalogItem(skin, priceCents, forcedId) {
   const [weapon, skinName = ''] = String(skin.name || '').split('|');
+  const wear = preferredWearForSkin(skin);
   const rarityKey = RARITY_KEY_BY_NAME[skin.rarity && skin.rarity.name] || 'milspec';
   const R = RARITIES[rarityKey] || RARITIES.milspec;
   const id = forcedId || slugId(skin.name);
@@ -587,7 +618,7 @@ function dynamicCatalogItem(skin, priceCents, forcedId) {
     weapon: String(weapon).trim(),
     skin: String(skinName).trim(),
     marketName: String(skinName).trim(),
-    wear: '',
+    wear,
     icon: skin.image || '',
     localIcon: '',
     priceCents: finalPrice,
@@ -619,7 +650,7 @@ async function buildFullCatalog() {
     const baseId = slugId(skin.name);
     const id = uniqueSlug(baseId, usedIds);
     usedIds.add(id);
-    const fakeItem = { name: skin.name, wear: '' };
+    const fakeItem = { name: skin.name, wear: preferredWearForSkin(skin) };
     const cp = cachedPriceForItem(fakeItem);
     const priceCents = cp.hit && cp.price ? cp.price : 0;
     dynamic.push(dynamicCatalogItem({ ...skin, name: skin.name }, priceCents, id));
@@ -1399,9 +1430,6 @@ function steamLogin(req) {
 }
 const usedOpenIdNonces = new Map();
 async function verifySteam(req) {
-  // Принимаем return_to как по BASE_URL, так и по реальному хосту запроса.
-  // Это чинит "OpenID return_to mismatch", когда сайт открыт по IP/домену,
-  // а BASE_URL в .env задан иначе (или наоборот).
   const normalizeUrl = u => String(u || '').trim().toLowerCase().replace(/\/+$/, '');
   const baseFromEnv = normalizeUrl(BASE_URL);
   const baseFromReq = normalizeUrl(`${req.protocol}://${req.get('host')}`);
@@ -1445,7 +1473,6 @@ async function verifySteam(req) {
   let text = '';
   const attempts = [];
 
-  // 1) Прямое подключение
   try {
     response = await doFetch();
     text = await response.text();
@@ -1455,7 +1482,6 @@ async function verifySteam(req) {
 
   const looksBlocked = !response || !response.ok || /Access Denied|Reference #18\.|is_valid\s*:\s*false/i.test(text);
 
-  // 2) Если прямой запрос не прошёл — пробуем прокси по очереди
   if (looksBlocked) {
     let list = [];
     try {
@@ -1760,10 +1786,6 @@ queue.on('audit.write', payload => {
   db.prepare('INSERT INTO admin_logs(admin_id,admin_name,action,target,details,created_at) VALUES(?,?,?,?,?,?)')
     .run(payload.adminId, payload.adminName, payload.action, payload.target, payload.details, payload.createdAt || Date.now());
 });
-queue.on('notify.user', payload => {
-  broadcast('notify', payload);
-});
-
 app.get('/api/config', (_, res) => {
   let banner = null;
   try { banner = JSON.parse(settingGetRaw('site_banner', 'null')); } catch {}
@@ -1951,6 +1973,19 @@ app.post('/api/settings', (req, res) => {
   `).run(nickname, tradeLink, privacy, streamerMode ? 1 : 0, Date.now(), account.id);
   res.json({ ok: true, nickname, tradeLink, privacy, streamerMode });
 });
+app.post('/api/catalog/:id/refresh-price', async (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  const item = CATALOG_BY_ID.get(String(req.params.id || ''));
+  if (!item) return res.status(404).json({ error: 'Предмет не найден' });
+  try {
+    const price = await refreshCatalogItemPrice(item, true);
+    if (!price) return res.status(503).json({ error: 'Steam временно не вернул цену' });
+    res.json({ item: publicCatalogItem(item) });
+  } catch (error) {
+    res.status(503).json({ error: error.message || 'Не удалось обновить цену' });
+  }
+});
 app.get('/api/catalog', (_, res) => {
   const cached = cache.get('catalog:public');
   if (cached) return res.json(cached);
@@ -2035,7 +2070,7 @@ app.post('/api/cases/open', (req, res) => {
   }
 });
 
-app.post('/api/upgrade', (req, res) => {
+app.post('/api/upgrade', async (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
   if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
@@ -2049,6 +2084,8 @@ app.post('/api/upgrade', (req, res) => {
   if (!Number.isSafeInteger(addBalanceCents) || addBalanceCents < 0) return res.status(400).json({ error: 'Недопустимая сумма из баланса' });
 
   try {
+    const liveTargetPrice = await refreshCatalogItemPrice(target, true);
+    if (!liveTargetPrice) throw new Error('Steam временно не вернул актуальную цену цели');
     const result = db.transaction(() => {
       const from = db.prepare(`
         SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'
@@ -2154,7 +2191,7 @@ app.get('/api/events', (req, res) => {
   });
 });
 app.get('/api/online', (_, res) => res.json({ online: onlineCount() }));
-app.get('/api/admin/online', requireStaff, (req, res) => {
+app.get('/api/admin/online', requireAdmin, (req, res) => {
   const admin = isAdmin(req.account);
   const list = uniqueOnlineClients().map(c => ({
     id: c.id,
@@ -2201,7 +2238,7 @@ app.post('/api/promo/redeem', (req, res) => {
   }
 });
 
-app.get('/api/admin/summary', requireStaff, (req, res) => {
+app.get('/api/admin/summary', requireAdmin, (req, res) => {
   const staffRole = roleOf(req.account);
   const day = Date.now() - 86400000;
   const totals = {
@@ -2229,7 +2266,7 @@ app.get('/api/admin/summary', requireStaff, (req, res) => {
   });
 });
 
-app.get('/api/admin/users', requireStaff, (req, res) => {
+app.get('/api/admin/users', requireAdmin, (req, res) => {
   const query = `%${String(req.query.q || '').trim().toLowerCase()}%`;
   const rows = db.prepare(`
     SELECT id, steamid, name, avatar, balance_cents AS balanceCents, role, banned,
@@ -2241,7 +2278,7 @@ app.get('/api/admin/users', requireStaff, (req, res) => {
   res.json({ users: rows.map(row => ({ ...row, banned: !!row.banned, frozen: !!row.frozen, tags: (() => { try { return JSON.parse(row.tags || '[]'); } catch { return []; } })(), isBot: !!row.isBot })) });
 });
 
-app.get('/api/admin/users/:id', requireStaff, (req, res) => {
+app.get('/api/admin/users/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -2352,7 +2389,7 @@ app.post('/api/admin/users/:id/give', requireAdmin, (req, res) => {
   res.json({ ok: true, inventoryId });
 });
 
-app.get('/api/admin/transactions', requireStaff, (req, res) => {
+app.get('/api/admin/transactions', requireAdmin, (req, res) => {
   const kind = String(req.query.kind || '').trim();
   const rows = kind
     ? db.prepare(`
@@ -2374,7 +2411,7 @@ app.get('/api/admin/transactions', requireStaff, (req, res) => {
   res.json({ transactions: rows, summary });
 });
 
-app.get('/api/admin/cases', requireStaff, (_, res) => {
+app.get('/api/admin/cases', requireAdmin, (_, res) => {
   const overrides = new Map(db.prepare('SELECT * FROM case_overrides').all().map(row => [row.case_id, row]));
   const stats = new Map(db.prepare(`
     SELECT case_id, COUNT(*) AS opened, COALESCE(SUM(cost_cents),0) AS revenue
@@ -2545,7 +2582,7 @@ app.delete('/api/admin/cases/:id', requireAdmin, (req, res) => {
   }
 });
 
-app.get('/api/admin/cases/preview/:id', requireStaff, (req, res) => {
+app.get('/api/admin/cases/preview/:id', requireAdmin, (req, res) => {
   const caseData = CASES_BY_ID.get(String(req.params.id));
   if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
   const totalWeight = caseData.contents.reduce((s,[,w])=>s+Number(w||0),0) || 1;
@@ -2563,7 +2600,7 @@ app.get('/api/admin/cases/preview/:id', requireStaff, (req, res) => {
   res.json({ id: caseData.id, name: caseData.name, totalWeight, evCents: Math.round(ev), priceCents: price, finalPriceCents: finalPrice, profitCents: Math.round(profit), roi: Math.round(roi*100)/100 });
 });
 
-app.get('/api/admin/drops', requireStaff, (_, res) => {
+app.get('/api/admin/drops', requireAdmin, (_, res) => {
   const rows = db.prepare(`
     SELECT id, user_name AS userName, item_name AS itemName, price_cents AS priceCents,
       rarity, source, created_at AS createdAt
@@ -2587,7 +2624,7 @@ app.post('/api/admin/settings', requireAdmin, (req, res) => {
   res.json({ ok: true, caseLuck, upgradeLuck });
 });
 
-app.get('/api/admin/bots', requireStaff, (_, res) => {
+app.get('/api/admin/bots', requireAdmin, (_, res) => {
   const rows = db.prepare(`
     SELECT id, name, avatar, balance_cents AS balanceCents, created_at AS createdAt
     FROM users WHERE is_bot = 1 ORDER BY id DESC LIMIT 100
@@ -2631,7 +2668,7 @@ app.post('/api/admin/bots/:id/drop', requireAdmin, (req, res) => {
   res.json({ ok: true, drop });
 });
 
-app.get('/api/admin/promos', requireStaff, (_, res) => {
+app.get('/api/admin/promos', requireAdmin, (_, res) => {
   const rows = db.prepare(`
     SELECT id, code, kind, amount_cents AS amountCents, max_uses AS maxUses,
       used_count AS usedCount, expires_at AS expiresAt, active, created_at AS createdAt
@@ -2780,7 +2817,7 @@ app.post('/api/admin/support/:userId/typing', requireStaff, (req, res) => {
   res.json({ ok:true });
 });
 
-app.get('/api/admin/logs', requireStaff, (req, res) => {
+app.get('/api/admin/logs', requireAdmin, (req, res) => {
   const qAdmin = String(req.query.admin || '').trim();
   const qAction = String(req.query.action || '').trim();
   const qSearch = String(req.query.q || '').trim();
@@ -2876,12 +2913,19 @@ app.post('/api/support/messages', (req, res) => {
 
 app.get('/api/notifications', (req, res) => {
   const now = Date.now();
+  const account = currentUser(req);
+  const allowedAudiences = ['all', account ? 'authenticated' : 'guests'];
+  const placeholders = allowedAudiences.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt
     FROM notifications
-    WHERE (expires_at IS NULL OR expires_at > ?) AND (scheduled_at IS NULL OR scheduled_at <= ?)
+    WHERE kind = 'broadcast'
+      AND audience IN (${placeholders})
+      AND (expires_at IS NULL OR expires_at > ?)
+      AND (scheduled_at IS NULL OR scheduled_at <= ?)
+      AND sent_at IS NOT NULL
     ORDER BY id DESC LIMIT 20
-  `).all(now, now);
+  `).all(...allowedAudiences, now, now);
   res.json({ notifications: rows });
 });
 
@@ -2913,8 +2957,9 @@ app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
   if (!title || !body) return res.status(400).json({ error: 'Укажите заголовок и текст' });
   if (!['all', 'authenticated', 'guests'].includes(audience)) return res.status(400).json({ error: 'Некорректная аудитория' });
   const now = Date.now();
-  const expires = ttlHours ? now + ttlHours * 3600000 : null;
   const sendNow = !scheduledAt || scheduledAt <= now;
+  const expiresFrom = sendNow ? now : scheduledAt;
+  const expires = ttlHours ? expiresFrom + ttlHours * 3600000 : null;
   const result = db.prepare(`INSERT INTO notifications(title,body,kind,audience,created_at,expires_at,scheduled_at,sent_at)
     VALUES(?,?,?,?,?,?,?,?)`).run(title, body, 'broadcast', audience, now, expires, scheduledAt, sendNow ? now : null);
   if (sendNow) broadcast('notify', { id: Number(result.lastInsertRowid), title, body, audience, createdAt: now });
@@ -2922,10 +2967,10 @@ app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
   res.json({ ok: true, id: Number(result.lastInsertRowid) });
 });
 
-app.get('/api/admin/broadcasts', requireStaff, (_, res) => {
+app.get('/api/admin/broadcasts', requireAdmin, (_, res) => {
   const rows = db.prepare(`
     SELECT id, title, body, kind, audience, created_at AS createdAt, expires_at AS expiresAt, scheduled_at AS scheduledAt, sent_at AS sentAt
-    FROM notifications ORDER BY id DESC LIMIT 50
+    FROM notifications WHERE kind = 'broadcast' ORDER BY id DESC LIMIT 50
   `).all();
   res.json({ broadcasts: rows });
 });
@@ -2939,7 +2984,7 @@ app.delete('/api/admin/broadcasts/:id', requireAdmin, (req, res) => {
 function sendScheduledNotifications() {
   const now = Date.now();
   const rows = db.prepare(`SELECT id,title,body,audience,created_at AS createdAt FROM notifications
-    WHERE sent_at IS NULL AND scheduled_at IS NOT NULL AND scheduled_at <= ? AND (expires_at IS NULL OR expires_at > ?)
+    WHERE kind = 'broadcast' AND sent_at IS NULL AND scheduled_at IS NOT NULL AND scheduled_at <= ? AND (expires_at IS NULL OR expires_at > ?)
     ORDER BY id ASC LIMIT 50`).all(now, now);
   for (const row of rows) {
     broadcast('notify', row);
@@ -2948,7 +2993,7 @@ function sendScheduledNotifications() {
 }
 setInterval(() => { try { sendScheduledNotifications(); } catch (_) {} }, 30_000).unref();
 
-app.get('/api/admin/site', requireStaff, (_req, res) => {
+app.get('/api/admin/site', requireAdmin, (_req, res) => {
   let banner = null;
   try { banner = JSON.parse(settingGetRaw('site_banner','null')); } catch {}
   res.json({
@@ -3018,7 +3063,7 @@ function getPriceManagerConfig() {
     block429Minutes:Number(settingGetRaw('proxy_block_429_minutes','30')) || 30,
     checkIntervalMinutes:Number(settingGetRaw('proxy_check_interval_minutes','15')) || 15,
     minInterval:Number(settingGetRaw('price_min_interval','400')) || 400,
-    source:settingGetRaw('price_source','auto'), alertPercent:Number(settingGetRaw('price_alert_percent','35')) || 35
+    source:settingGetRaw('price_source','steam')
   };
 }
 function applyPriceManagerConfig() {
@@ -3037,19 +3082,19 @@ setInterval(async () => {
   try { await manager.validateCurrentProxies({concurrency:config.workers,timeoutMs:config.timeoutMs,persist:true}); } catch (_) {}
 },60_000).unref();
 
-app.get('/api/admin/prices/config', requireStaff, (_req,res)=>res.json(getPriceManagerConfig()));
+app.get('/api/admin/prices/config', requireAdmin, (_req,res)=>res.json(getPriceManagerConfig()));
 app.post('/api/admin/prices/config', requireAdmin, (req,res)=>{
   const source=['steam','skinport','auto'].includes(String(req.body?.source))?String(req.body.source):'auto';
   const values={
     price_workers:Math.max(1,Math.min(24,Number(req.body?.workers)||12)), proxy_timeout_ms:Math.max(1500,Math.min(15000,Number(req.body?.timeoutMs)||4000)),
     proxy_max_failures:Math.max(1,Math.min(20,Number(req.body?.maxFailures)||3)), proxy_block_429_minutes:Math.max(1,Math.min(1440,Number(req.body?.block429Minutes)||30)),
     proxy_check_interval_minutes:Math.max(5,Math.min(1440,Number(req.body?.checkIntervalMinutes)||15)), price_min_interval:Math.max(100,Math.min(10000,Number(req.body?.minInterval)||400)),
-    price_source:source, price_alert_percent:Math.max(5,Math.min(500,Number(req.body?.alertPercent)||35))
+    price_source:source
   };
   for(const [key,value] of Object.entries(values)) settingSet(key,String(value));
   const config=applyPriceManagerConfig(); adminLog(req.account,'price_config','',JSON.stringify(config)); res.json({ok:true,...config});
 });
-app.get('/api/admin/prices/history', requireStaff, (req,res)=>{
+app.get('/api/admin/prices/history', requireAdmin, (req,res)=>{
   const query=String(req.query.q||'').trim(); const rows=query?
     db.prepare(`SELECT market_hash_name AS marketHashName,price,source,change_percent AS changePercent,created_at AS createdAt FROM steam_price_history WHERE market_hash_name LIKE ? ORDER BY id DESC LIMIT 200`).all(`%${query}%`):
     db.prepare(`SELECT market_hash_name AS marketHashName,price,source,change_percent AS changePercent,created_at AS createdAt FROM steam_price_history ORDER BY id DESC LIMIT 200`).all();
@@ -3072,7 +3117,7 @@ app.post('/api/admin/proxies/retest', requireAdmin, async (req,res)=>{
   res.json({ok:!!checked.working,result:checked.results[0]});
 });
 
-app.get('/api/admin/prices/status', requireStaff, (_req, res) => {
+app.get('/api/admin/prices/status', requireAdmin, (_req, res) => {
   const cached = db.prepare('SELECT COUNT(*) c FROM steam_prices').get().c;
   const withPrice = CATALOG.filter(i => i.priceCents > 0).length;
   res.json({
@@ -3149,7 +3194,7 @@ app.post('/api/admin/cleanup', requireAdmin, (req, res) => {
   }
 });
 
-app.get('/api/admin/prices/queue/status', requireStaff, (req, res) => {
+app.get('/api/admin/prices/queue/status', requireAdmin, (req, res) => {
   const pq = global.__priceQueue || { paused: false, stats: () => ({}) };
   const s = pq.stats ? pq.stats() : {};
   res.json({ paused: !!pq.paused, ...s, loading: PRICE_LOADING, progress: PRICE_PROGRESS });
@@ -3176,7 +3221,7 @@ app.post('/api/admin/prices/queue/clear', requireAdmin, (req, res) => {
   }
 });
 
-app.get('/api/admin/proxies', requireStaff, (req, res) => {
+app.get('/api/admin/proxies', requireAdmin, (req, res) => {
   const pq = global.__priceQueue;
   const stats = pq && pq.stats ? pq.stats() : { proxies: 0, proxyStats: [] };
   let fileList = [];
@@ -3265,7 +3310,7 @@ app.post('/api/admin/proxies/fetch-free', requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/admin/email/status', requireStaff, (_, res) => {
+app.get('/api/admin/email/status', requireAdmin, (_, res) => {
   const pending = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='pending'").get().c;
   const sent = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='sent'").get().c;
   const failed = db.prepare("SELECT COUNT(*) AS c FROM email_messages WHERE status='failed'").get().c;
@@ -3276,7 +3321,7 @@ app.get('/api/admin/email/status', requireStaff, (_, res) => {
   });
 });
 
-app.get('/api/admin/email/queue', requireStaff, (req, res) => {
+app.get('/api/admin/email/queue', requireAdmin, (req, res) => {
   const status = String(req.query.status || '').trim();
   const rows = status
     ? db.prepare(`SELECT id, recipient_email AS "to", user_id AS userId, subject, status, attempts, error, created_at AS createdAt, sent_at AS sentAt
@@ -3331,7 +3376,7 @@ app.post('/api/admin/email/broadcast', requireAdmin, (req, res) => {
   res.json({ ok: true, queued, recipients: rows.length });
 });
 
-app.post('/api/admin/users/:id/email', requireStaff, (req, res) => {
+app.post('/api/admin/users/:id/email', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -3389,7 +3434,7 @@ queue.on('email.process', async job => {
 
 queue.on('support.notify', async ({ userId, message }) => {
   try {
-    const user = db.prepare('SELECT support_email AS email, name FROM users WHERE id = ?').get(userId);
+    const user = db.prepare('SELECT support_email AS email, name, email_optout FROM users WHERE id = ?').get(userId);
     if (!user || !user.email || user.email_optout) return;
     const html = `<p>Здравствуйте, ${escapeHtml(user.name) || 'игрок'}!</p>
       <p>Мы получили ваше обращение в поддержку:</p>
@@ -3422,7 +3467,6 @@ app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ error: 'Маршрут не найден' });
   }
-  // Неизвестные auth-адреса не должны попадать в SPA и выглядеть как рабочий вход.
   if (req.path.startsWith('/auth/')) {
     return res.status(404).send('Not found');
   }

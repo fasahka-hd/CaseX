@@ -255,7 +255,7 @@ function listen() {
       return true;
     });
     S.notifications = filtered.slice(0, 20);
-    const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
+    const seen = notificationSeenIds();
     let unread = 0;
     for (const n of filtered) if (!seen.has(n.id)) unread++;
     S.unreadNotifications = unread;
@@ -418,23 +418,24 @@ function upgradePage() {
   const rangeProgress = balanceCents > 0 ? Math.min(100, S.addBalance / balanceCents * 100) : 0;
   const soundOn = localStorage.getItem('keyser-sound') !== '0';
   const turboOn = S.turbo;
+  const turboLabel = turboOn ? 'Быстрый режим включён' : 'Быстрый режим выключен';
   const fromLabel = S.from ? `${money(S.from.priceCents)}${S.addBalance ? ` + ${money(S.addBalance)}` : ''}` : '';
   const leftEmpty = '<div class="selected-big empty">Выбранный предмет появится здесь</div>';
   return `<section class="upgrid">
       <div class="source-col">
         <div class="panel-tools">
-          <button type="button" aria-label="Turbo mode" aria-pressed="${turboOn}" title="Turbo mode" onclick="toggleTurbo()">${turboIcon(turboOn)}</button>
+          <button type="button" class="turbo-toggle ${turboOn ? 'active' : ''}" aria-label="${turboLabel}" aria-pressed="${turboOn}" title="${turboLabel}" onclick="toggleTurbo()">${turboIcon(turboOn)}</button>
           <button type="button" aria-label="Sound" aria-pressed="${soundOn}" title="Звук" onclick="toggleSoundBtn()">${soundIcon(soundOn)}</button>
         </div>
         <div class="panel"><div class="title">ВЫБЕРИТЕ <b>&nbsp;ПРЕДМЕТ ДЛЯ ИСПОЛЬЗОВАНИЯ</b></div>
           ${S.from ? bigSelected(S.from) : leftEmpty}
         </div>
         <div class="add-balance-bar">
-          <div class="add-balance-title">${coinIcon('2rem', '#9AA29F')}<span>Добавить баланс</span></div>
-          <div class="add-balance-mid"><div class="ab-value">${coinIcon('1.6rem')}<b>${money(S.addBalance)}</b></div>
+          <div class="add-balance-title"><img class="add-balance-coin" src="/chunks/coin.svg" alt=""><span>Добавить баланс</span></div>
+          <div class="add-balance-mid"><div class="ab-value"><b>${money(S.addBalance)}</b></div>
             <input class="add-balance-range" type="range" min="0" max="${balanceR}" step="0.01" value="${addR}" style="--range-progress:${rangeProgress}%" oninput="setAddBalance(this.value)" ${balanceCents > 0 ? '' : 'disabled'}>
           </div>
-          <div class="add-balance-max"><span>Макс.</span><div>${coinIcon('1.6rem', '#9AA29F')}<b>${money(balanceCents)}</b></div></div>
+          <div class="add-balance-max"><span>Макс.</span><div><b>${money(balanceCents)}</b></div></div>
         </div>
       </div>
       <div class="wheelbox${S.spinning ? ' is-spinning' : ''}">
@@ -697,7 +698,7 @@ function profilePage() {
   const avatar = avatarImage(user);
   const best = profile.bestDrop
     ? `<div class="profile-best-item"><div class="profile-best-copy"><strong>${esc(profile.bestDrop.name || profile.bestDrop.itemName || 'Лучший дроп')}</strong><span>${esc(profile.bestDrop.skin || profile.bestDrop.marketName || 'Лучший предмет в инвентаре')}</span><b>${coinPrice(profile.bestDrop.priceCents)}</b></div><div class="profile-best-art">${image(profile.bestDrop.icon || profile.bestDrop.itemIcon, profile.bestDrop.name || profile.bestDrop.itemName || '')}</div></div>`
-    : '<div class="profile-best-empty"><span>Отобразится после первой игры</span><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""></div>';
+    : '<div class="profile-best-empty"><span>Отобразится после первой игры</span><img class="best-empty-img" src="/chunks/empty.webp" alt=""></div>';
   let content = '';
   if (S.profileTab === 'items') {
     const items = sortList(S.inventory);
@@ -731,7 +732,7 @@ function publicProfilePage(){
   if(S.publicProfileError)return `<div class="public-profile-state error"><b>Профиль недоступен</b><span>${esc(S.publicProfileError)}</span><button onclick="go('upgrade')">На главную</button></div>`;
   const profile=S.publicProfile;if(!profile)return '<div class="public-profile-state">Профиль не выбран</div>';
   const user=profile.user||{},avatar=avatarImage(user),tags=(user.tags||[]).map(tag=>`<span class="public-user-tag tag-${esc(tag)}">${esc({vip:'VIP',suspicious:'Подозрительный',verified:'Проверенный',partner:'Партнёр'}[tag]||tag)}</span>`).join('');
-  const best=profile.bestDrop?`<div class="profile-best-item"><div class="profile-best-copy"><strong>${esc(profile.bestDrop.name||'Лучший дроп')}</strong><span>${esc(profile.bestDrop.skin||'Лучший предмет в инвентаре')}</span><b>${coinPrice(profile.bestDrop.priceCents)}</b></div><div class="profile-best-art">${image(profile.bestDrop.icon,profile.bestDrop.name||'')}</div></div>`:'<div class="profile-best-empty"><span>У игрока пока нет предметов</span><img class="best-empty-img" src="/chunks/steamBg.webp" alt=""></div>';
+  const best=profile.bestDrop?`<div class="profile-best-item"><div class="profile-best-copy"><strong>${esc(profile.bestDrop.name||'Лучший дроп')}</strong><span>${esc(profile.bestDrop.skin||'Лучший предмет в инвентаре')}</span><b>${coinPrice(profile.bestDrop.priceCents)}</b></div><div class="profile-best-art">${image(profile.bestDrop.icon,profile.bestDrop.name||'')}</div></div>`:'<div class="profile-best-empty"><span>У игрока пока нет предметов</span><img class="best-empty-img" src="/chunks/empty.webp" alt=""></div>';
   let content='';if(S.profileTab==='items'){const items=sortList(profile.items||[]);content=items.length?`<div class="profile-items-grid profile-public-items">${items.map(historyCard).join('')}</div>`:'<div class="profile-empty">У ИГРОКА НЕТ АКТИВНЫХ ПРЕДМЕТОВ</div>';}else if(S.profileTab==='history'){const rows=sortList(profile.history||[]);content=rows.length?`<div class="profile-items-grid profile-history-grid">${rows.map(historyCard).join('')}</div>`:'<div class="profile-empty">ИСТОРИЯ ПУСТА</div>';}else{const upgrades=profile.upgrades||[];content=upgrades.length?`<div class="profile-upgrades-grid">${upgrades.map(upgradeCard).join('')}</div>`:'<div class="profile-empty">ИСТОРИЯ АПГРЕЙДОВ ПУСТА</div>';}
   return `<section class="profile-page public-profile-page"><button class="public-profile-back" onclick="history.back()">← Назад</button><div class="profile-summary-grid"><article class="profile-user-card"><div class="profile-identity">${avatar}<div><h1>${esc(user.name||'Игрок')}</h1><span>ID: ${esc(user.steamid||user.id||'')}</span>${roleBadge(user.role)}<div class="public-user-tags">${tags}</div></div><div class="profile-tools"><a href="https://steamcommunity.com/profiles/${esc(user.steamid||'')}" target="_blank" rel="noopener">${steamIcon()}</a></div></div><div class="public-profile-caption">Публичный профиль игрока</div><div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened||0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade||0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems||0}</b><span>Продажи</span></div></div></article><article class="profile-best-card"><h2>Лучший дроп</h2>${best}</article><div class="profile-side-column"><article class="profile-withdraw"><span class="withdrawn-label">Продано предметов</span><div class="withdrawn-amount"><b>${(Number(profile.withdrawnCents||0)/100).toFixed(2)}</b><img src="/chunks/coin.svg" alt=""></div><span class="withdrawn-count">${profile.activeItems||0} активных предметов</span><img class="withdrawn-bg" src="/chunks/steamBg.webp" alt=""></article><article class="public-profile-info"><span>Профиль создан</span><b>${user.createdAt?new Date(user.createdAt).toLocaleDateString('ru-RU'):'—'}</b></article></div></div><div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab==='items'?'active':''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab==='history'?'active':''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab==='upgrades'?'active':''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div><div class="profile-toolbar-right">${profileSortButton()}</div></div><div class="profile-content">${content}</div></section>`;
 }
@@ -971,7 +972,7 @@ function upgradeTargets() {
   const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
   return S.catalog.filter(item => item.priceCents >= minimum).sort((a, b) => a.priceCents - b.priceCents);
 }
-function choose(id, side) {
+async function choose(id, side) {
   const item = side === 'from'
     ? S.inventory.find(value => String(value.assetid) === String(id))
     : S.catalog.find(value => String(value.catalogId) === String(id));
@@ -979,22 +980,32 @@ function choose(id, side) {
   if (side === 'from') {
     S.from = item;
     setBoost(S.boost, false);
-  } else {
-    // Защита от рассинхрона фильтра/состояния: цель должна удовлетворять бусту.
-    const baseValue = upgradeBaseValue();
-    const minimum = boostMinimumPrice(baseValue, S.boost);
-    if (Number(item.priceCents) < minimum) {
-      toast('Цель не соответствует выбранному проценту апгрейда', 'error');
-      return;
-    }
-    S.to = item;
+    recalculateChance();
+    render();
+    return;
   }
+  S.to = item;
   recalculateChance();
   render();
+  try {
+    const result = await api(`/api/catalog/${encodeURIComponent(item.catalogId)}/refresh-price`, { method: 'POST' });
+    if (result?.item) Object.assign(item, result.item);
+    const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
+    if (Number(item.priceCents) < minimum) {
+      S.to = null;
+      toast('После обновления цены цель не соответствует проценту апгрейда', 'error');
+    }
+    recalculateChance();
+    render();
+  } catch (error) {
+    S.to = null;
+    recalculateChance();
+    render();
+    toast(error.message, 'error');
+  }
 }
 function setBoost(value, shouldRender = true) {
   S.boost = Number(value);
-  // Смена буста меняет множество доступных целей — сбрасываем постраничку.
   S.targetPage = 1;
   const targets = upgradeTargets();
   S.to = targets[0] || null;
@@ -1004,9 +1015,7 @@ function setBoost(value, shouldRender = true) {
 function setAddBalance(value) {
   const balanceCents = Number(S.me.user.balanceCents || 0);
   S.addBalance = Math.round(Math.min(Math.max(Number(value) || 0, 0), balanceCents / 100) * 100);
-  // Добавление баланса снижает минимальную стоимость цели — сбрасываем страницу.
   S.targetPage = 1;
-  // Если выбранная цель больше не удовлетворяет минимому, сбрасываем её.
   if (S.to) {
     const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
     if (Number(S.to.priceCents) < minimum) S.to = null;
@@ -1220,9 +1229,9 @@ async function upgrade() {
     if (headEl) headEl.textContent = formatChance(S.chance);
     const centerEl = document.querySelector('.wheelcenter strong');
     if (centerEl) centerEl.textContent = formatChance(S.chance);
-    await new Promise(resolve => setTimeout(resolve, S.turbo ? 250 : 700));
+    await new Promise(resolve => setTimeout(resolve, S.turbo ? 60 : 900));
     const total = pointerLanding(!!result.won, result.chance);
-    await spinPointerTo(total, S.turbo ? 1400 : 2400);
+    await spinPointerTo(total, S.turbo ? 360 : 4200);
     await refreshAccount();
     S.upgradeResult = {
       won: !!result.won,
@@ -1594,8 +1603,26 @@ Object.assign(window, {
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
   closeUpgradeResult, closeCaseReveal, openInventory, openPublicProfile, acceptCookies, rejectCookies
 });
-function closeNotifications() {
-  document.querySelector('[data-notifications-overlay]')?.remove();
+function notificationSeenIds() {
+  try {
+    const value = JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]');
+    return new Set(Array.isArray(value) ? value : []);
+  } catch {
+    return new Set();
+  }
+}
+function closeNotifications(immediate = false) {
+  const overlay = document.querySelector('[data-notifications-overlay]');
+  if (!overlay) return;
+  if (immediate) {
+    overlay.remove();
+    return;
+  }
+  if (overlay.classList.contains('notifications-closing')) return;
+  overlay.classList.add('notifications-closing');
+  const remove = () => overlay.remove();
+  overlay.addEventListener('animationend', remove, { once: true });
+  setTimeout(remove, 260);
 }
 async function openNotifications() {
   try {
@@ -1607,7 +1634,7 @@ async function openNotifications() {
       return true;
     });
     S.notifications = list.slice(0, 20);
-    closeNotifications();
+    closeNotifications(true);
     const body = S.notifications.length
       ? S.notifications.map(n => `<article class="notification-item notification-${esc(n.kind || 'info')}"><b>${esc(n.title)}</b><p>${esc(n.body)}</p><time>${new Date(n.createdAt).toLocaleString('ru-RU')}</time></article>`).join('')
       : '<div class="notifications-empty">Уведомлений пока нет</div>';
@@ -1615,7 +1642,7 @@ async function openNotifications() {
     const overlay = document.querySelector('[data-notifications-overlay]');
     translateDom(overlay);
     overlay?.addEventListener('click', event => { if (event.target === overlay) closeNotifications(); });
-    const seen = new Set(JSON.parse(localStorage.getItem('keyser-seen-notifications') || '[]'));
+    const seen = notificationSeenIds();
     S.notifications.forEach(n => seen.add(n.id));
     localStorage.setItem('keyser-seen-notifications', JSON.stringify([...seen].slice(-100)));
     S.unreadNotifications = 0;

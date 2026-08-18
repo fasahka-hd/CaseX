@@ -159,7 +159,7 @@
   function render() {
     const modalScroll = root.querySelector('.modal')?.scrollTop || 0;
     const tabs = TABS
-      .filter(tab => !tab.adminOnly || isAdmin())
+      .filter(tab => isAdmin() ? true : tab.key === 'support')
       .map(tab => `<button class="${state.tab === tab.key ? 'active' : ''}" data-tab="${tab.key}">${icon(tab.key)}${tab.label}</button>`)
       .join('');
 
@@ -784,7 +784,7 @@
     const config = state.priceConfig || {};
     const history = state.priceHistory || [];
     const bars = (priceStatus.speedHistory || []).slice(-24);
-    return `${priceBlock}<section class="block price-config"><h2>Настройки очереди и источника</h2><div class="block-body price-config-grid"><label>Источник цен<select id="price-source"><option value="auto" ${config.source==='auto'?'selected':''}>Steam → Skinport (резерв)</option><option value="steam" ${config.source==='steam'?'selected':''}>Только Steam</option><option value="skinport" ${config.source==='skinport'?'selected':''}>Только Skinport</option></select></label><label>Потоки<input id="price-workers" type="number" min="1" max="24" value="${config.workers||12}"></label><label>Таймаут прокси, мс<input id="price-timeout" type="number" min="1500" max="15000" value="${config.timeoutMs||4000}"></label><label>Удалить после ошибок<input id="price-max-fails" type="number" min="1" max="20" value="${config.maxFailures||3}"></label><label>Блокировка 429, минут<input id="price-block-429" type="number" min="1" max="1440" value="${config.block429Minutes||30}"></label><label>Проверка каждые, минут<input id="price-check-interval" type="number" min="5" value="${config.checkIntervalMinutes||15}"></label><label>Пауза между запросами, мс<input id="price-min-interval" type="number" min="100" value="${config.minInterval||400}"></label><label>Тревога при изменении, %<input id="price-alert" type="number" min="5" value="${config.alertPercent||35}"></label><button class="act primary" id="price-config-save">Сохранить настройки</button></div></section><section class="block"><h2>Скорость обновления</h2><div class="price-speed-chart">${bars.length?bars.map(point=>`<i style="height:${Math.max(4,Math.min(100,Number(point.rate||0)*10))}%" title="${Number(point.rate||0).toFixed(2)} цен/с"></i>`).join(''):'<span class="muted">График появится во время обновления цен</span>'}</div></section><section class="block"><h2>История изменения цен</h2><div class="block-body row"><input id="price-history-q" class="grow" placeholder="Название предмета"><button class="act" id="price-history-search">Найти</button></div><div class="table-scroll"><table><thead><tr><th>Предмет</th><th>Цена</th><th>Источник</th><th>Изменение</th><th>Дата</th></tr></thead><tbody>${history.map(row=>`<tr><td>${esc(row.marketHashName)}</td><td>${money(row.price)}</td><td>${esc(row.source)}</td><td class="${row.changePercent>=0?'pos':'neg'}">${row.changePercent>=0?'+':''}${Number(row.changePercent).toFixed(1)}%</td><td>${when(row.createdAt)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty-row">История пока пуста</td></tr>'}</tbody></table></div></section>`;
+    return `${priceBlock}<section class="block price-config"><h2>Настройки очереди и источника</h2><div class="block-body price-config-grid"><label>Источник цен<select id="price-source"><option value="auto" ${config.source==='auto'?'selected':''}>Steam → Skinport (резерв)</option><option value="steam" ${config.source==='steam'?'selected':''}>Только Steam</option><option value="skinport" ${config.source==='skinport'?'selected':''}>Только Skinport</option></select></label><label>Потоки<input id="price-workers" type="number" min="1" max="24" value="${config.workers||12}"></label><label>Таймаут прокси, мс<input id="price-timeout" type="number" min="1500" max="15000" value="${config.timeoutMs||4000}"></label><label>Удалить после ошибок<input id="price-max-fails" type="number" min="1" max="20" value="${config.maxFailures||3}"></label><label>Блокировка 429, минут<input id="price-block-429" type="number" min="1" max="1440" value="${config.block429Minutes||30}"></label><label>Проверка каждые, минут<input id="price-check-interval" type="number" min="5" value="${config.checkIntervalMinutes||15}"></label><label>Пауза между запросами, мс<input id="price-min-interval" type="number" min="100" value="${config.minInterval||400}"></label><button class="act primary" id="price-config-save">Сохранить настройки</button></div></section><section class="block"><h2>Скорость обновления</h2><div class="price-speed-chart">${bars.length?bars.map(point=>`<i style="height:${Math.max(4,Math.min(100,Number(point.rate||0)*10))}%" title="${Number(point.rate||0).toFixed(2)} цен/с"></i>`).join(''):'<span class="muted">График появится во время обновления цен</span>'}</div></section><section class="block"><h2>История изменения цен</h2><div class="block-body row"><input id="price-history-q" class="grow" placeholder="Название предмета"><button class="act" id="price-history-search">Найти</button></div><div class="table-scroll"><table><thead><tr><th>Предмет</th><th>Цена</th><th>Источник</th><th>Изменение</th><th>Дата</th></tr></thead><tbody>${history.map(row=>`<tr><td>${esc(row.marketHashName)}</td><td>${money(row.price)}</td><td>${esc(row.source)}</td><td class="${row.changePercent>=0?'pos':'neg'}">${row.changePercent>=0?'+':''}${Number(row.changePercent).toFixed(1)}%</td><td>${when(row.createdAt)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty-row">История пока пуста</td></tr>'}</tbody></table></div></section>`;
   }
 
   function logsView() {
@@ -1312,7 +1312,7 @@
     const proxyImport=view.querySelector('#proxy-import-btn');
     if(proxyImport)proxyImport.addEventListener('click',async()=>{const file=view.querySelector('#proxy-import-file')?.files?.[0];if(!file)return toast('Выберите TXT или CSV файл','err');proxyImport.disabled=true;proxyImport.textContent='Проверяю…';try{const text=await file.text();const result=await api('/api/admin/proxies/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});toast(`Проверено ${result.checked}, работают ${result.working}, отклонено ${result.rejected}`,'ok');await loadPrices();}catch(error){toast(error.message,'err');}finally{proxyImport.disabled=false;proxyImport.textContent='Импортировать файл';}});
     const priceSave=view.querySelector('#price-config-save');
-    if(priceSave)priceSave.addEventListener('click',async()=>{const body={source:view.querySelector('#price-source').value,workers:Number(view.querySelector('#price-workers').value),timeoutMs:Number(view.querySelector('#price-timeout').value),maxFailures:Number(view.querySelector('#price-max-fails').value),block429Minutes:Number(view.querySelector('#price-block-429').value),checkIntervalMinutes:Number(view.querySelector('#price-check-interval').value),minInterval:Number(view.querySelector('#price-min-interval').value),alertPercent:Number(view.querySelector('#price-alert').value)};await run(()=>api('/api/admin/prices/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'Настройки цен сохранены',loadPrices);});
+    if(priceSave)priceSave.addEventListener('click',async()=>{const body={source:view.querySelector('#price-source').value,workers:Number(view.querySelector('#price-workers').value),timeoutMs:Number(view.querySelector('#price-timeout').value),maxFailures:Number(view.querySelector('#price-max-fails').value),block429Minutes:Number(view.querySelector('#price-block-429').value),checkIntervalMinutes:Number(view.querySelector('#price-check-interval').value),minInterval:Number(view.querySelector('#price-min-interval').value)};await run(()=>api('/api/admin/prices/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'Настройки цен сохранены',loadPrices);});
     const historySearch=view.querySelector('#price-history-search');if(historySearch)historySearch.addEventListener('click',()=>loadPrices(view.querySelector('#price-history-q')?.value||''));
 
     const siteSave=view.querySelector('#site-save');
@@ -1544,6 +1544,7 @@
   }
 
   async function selectTab(tab) {
+    if (!isAdmin() && tab !== 'support') tab = 'support';
     state.tab = tab;
     state.userDetail = null;
     state.thread = null;
@@ -1582,7 +1583,14 @@
         root.innerHTML = '<div><h2>Доступ запрещён</h2><p>Раздел доступен администраторам и поддержке.</p><a href="/">На главную</a></div>';
         return;
       }
-      await loadSummary();
+      if (state.role === 'support') {
+        state.tab = 'support';
+        const config = await api('/api/config').catch(() => null);
+        if (config?.brand) state.brand = String(config.brand).toUpperCase();
+        await loadSupport();
+      } else {
+        await loadSummary();
+      }
       const events=new EventSource('/api/events');
       events.addEventListener('support-ticket',event=>{try{const ticket=JSON.parse(event.data);toast(`Новый тикет: ${ticket.userName} · ${TICKET_CATEGORIES[ticket.category]||ticket.category}`,'ok');if(state.tab==='support')loadSupport();}catch(_){}});
       setInterval(async()=>{if(state.tab!=='support'||!state.thread)return;try{const data=await api(`/api/admin/support/${state.thread.user.id}`);state.thread.typingStaff=data.typingStaff||'';const existing=document.querySelector('.staff-typing');if(existing&&!data.typingStaff)existing.remove();else if(existing)existing.innerHTML=`<i></i>${esc(data.typingStaff)} печатает ответ…`;else if(data.typingStaff){const head=document.querySelector('.chat-head');head?.insertAdjacentHTML('afterend',`<div class="staff-typing"><i></i>${esc(data.typingStaff)} печатает ответ…</div>`);}}catch(_){}},3000);

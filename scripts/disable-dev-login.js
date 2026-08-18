@@ -1,9 +1,5 @@
 'use strict';
 
-// Production hard-disable for the development login.
-// The server contains a legacy /auth/dev route guarded by ALLOW_DEV_LOGIN;
-// this preload prevents that route from being registered at all and removes
-// any legacy /auth/dev links from generated error pages.
 const express = require('express');
 
 const originalGet = express.application.get;

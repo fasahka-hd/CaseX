@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const FRESH_TTL = 2 * 60 * 60 * 1000;
+const FRESH_TTL = 30 * 60 * 1000;
 const STALE_TTL = 30 * 24 * 60 * 60 * 1000;
 let MIN_INTERVAL = 400;
 let WORKER_LIMIT = 12;

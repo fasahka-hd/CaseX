@@ -302,7 +302,7 @@
           <tr><td>Админ-панель</td><td>Все 8 разделов реализованы, роли admin / support, журнал действий</td><td class="st"><span class="pill done">готово</span></td></tr>
           <tr><td>База данных</td><td>PostgreSQL 17 через lib/db.js. SQLite остаётся запасным драйвером (DB_DRIVER). Есть скрипт миграции данных</td><td class="st"><span class="pill done">внедрён</span></td></tr>
           <tr><td>Redis</td><td>Redis 8 через lib/cache.js: кеш каталога и статистики, rate limiting со счётчиками и TTL, автоматический откат в память при обрыве</td><td class="st"><span class="pill done">внедрён</span></td></tr>
-          <tr><td>RabbitMQ</td><td>lib/queue.js: асинхронные топики drop.broadcast, stats.refresh, audit.write, notify.user с ретраями. Брокер RabbitMQ можно подключить вместо встроенного</td><td class="st"><span class="pill part">очередь есть</span></td></tr>
+          <tr><td>RabbitMQ</td><td>lib/queue.js: асинхронные топики drop.broadcast, stats.refresh, audit.write с ретраями. Брокер RabbitMQ можно подключить вместо встроенного</td><td class="st"><span class="pill part">очередь есть</span></td></tr>
           <tr><td>Cloudflare / Nginx</td><td>deploy/nginx.conf: upstream с балансировкой, SSL, limit_req, real_ip от Cloudflare, отдельная локация для SSE. Плюс Dockerfile, docker-compose.yml и кроссплатформенные npm-скрипты</td><td class="st"><span class="pill part">конфиг готов</span></td></tr>
         </tbody>
       </table>
