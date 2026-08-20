@@ -522,7 +522,7 @@ async function sellSelectedItems() {
   await refreshAccount();
   S.from = null; S.to = null; S.chance = null;
   render();
-  toast(sold ? `Продано: ${sold} шт. на ${money(amount)}` : 'Не удалось продать', sold ? '' : 'error');
+  toast(sold ? `Продано: ${sold} шт. на ${money(amount)}` : 'Не удалось продать', sold ? 'success' : 'error');
 }
 function cxSellAllBar() {
   if (!S.sellAllConfirm) return '';
@@ -535,7 +535,7 @@ function cxSellAllBar() {
   </div>`;
 }
 function cxAskSellAll() {
-  if (!S.inventory.length) return toast('Инвентарь пуст');
+  if (!S.inventory.length) return toast('Инвентарь пуст', 'error');
   S.sellAllConfirm = true;
   S.sellMode = false;
   S.sellSelected.clear();
@@ -549,7 +549,7 @@ async function cxDoSellAll() {
     await refreshAccount();
     S.from = null; S.to = null; S.chance = null;
     render();
-    toast(`Продано ${r.count} шт. на ${money(r.totalCents)}`);
+    toast(`Продано ${r.count} шт. на ${money(r.totalCents)}`, 'success');
   } catch (e) { toast(e.message || 'Ошибка', 'error'); }
 }
 function inventoryPage() {
@@ -679,15 +679,16 @@ function rewardsPage() {
     </section>`;
 }
 async function cxClaimWeekly(catalogId) {
-  if (!S.cxWeekly || !(S.cxWeekly.left>0)) return toast('Вы уже забрали все доступные скины');
-  if (!confirm('Забрать этот скин? Осталось забрать: ' + (S.cxWeekly.left||0))) return;
+  if (!S.cxWeekly || !(S.cxWeekly.left>0)) return toast('Вы уже забрали все доступные скины', 'error');
+  const approved = await customConfirm(`Забрать этот скин? Осталось забрать: ${S.cxWeekly.left || 0}`, { title: 'Еженедельный набор', confirmText: 'Забрать' });
+  if (!approved) return;
   try {
     const r = await api('/api/cx-weekly/claim/' + encodeURIComponent(catalogId), { method: 'POST' });
     S.cxWeekly = Object.assign({}, S.cxWeekly, { claimed: r.claimed, left: r.left, pool: (S.cxWeekly.pool||[]).map(it=>it.catalogId===catalogId?Object.assign({},it,{claimed:true}):it) });
     S.me.user.balanceCents = r.balanceCents;
     await refreshAccount();
     render();
-    toast('Скин добавлен в инвентарь');
+    toast('Скин добавлен в инвентарь', 'success');
   } catch (e) { toast(e.message || 'Не удалось забрать скин', 'error'); }
 }
 
@@ -860,7 +861,6 @@ function siteFooter() {
     </div>
   </footer>`;
 }
-
 
 function siteBanner() {
   const banner=S.siteBanner;if(!banner)return '';
@@ -1146,7 +1146,7 @@ function setTargetPage(page) {
 }
 function sendToUpgrade(id) {
   const item = S.inventory.find(value => String(value.assetid) === String(id));
-  if (!item) return toast('Предмет уже недоступен');
+  if (!item) return toast('Предмет уже недоступен', 'error');
   S.page = 'upgrade';
   S.from = item;
   setBoost(S.boost, false);
@@ -1158,7 +1158,7 @@ async function sellItem(id) {
     await refreshAccount();
     if (S.from && String(S.from.assetid) === String(id)) { S.from = null; S.to = null; S.chance = null; }
     render();
-    toast(`Предмет продан за ${money(result.amountCents)}`);
+    toast(`Предмет продан за ${money(result.amountCents)}`, 'success');
   } catch (error) { toast(error.message, 'error'); }
 }
 
@@ -1605,7 +1605,7 @@ function legacyCopy(text) {
 }
 async function copyTradeLink() {
   const value = document.querySelector('#settings-trade')?.value || '';
-  if (!value) return toast('Сначала вставьте трейд-ссылку');
+  if (!value) return toast('Сначала вставьте трейд-ссылку', 'error');
   let ok = false;
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1617,9 +1617,9 @@ async function copyTradeLink() {
   } catch { ok = legacyCopy(value); }
   if (ok) {
     flashCopySuccess();
-    toast('Трейд-ссылка скопирована');
+    toast('Трейд-ссылка скопирована', 'success');
   } else {
-    toast('Не удалось скопировать ссылку');
+    toast('Не удалось скопировать ссылку', 'error');
   }
 }
 async function saveSettings() {
@@ -1636,7 +1636,7 @@ async function saveSettings() {
     if (S.profile?.user) S.profile.user.name = saved.nickname;
     S.settingsOpen = false;
     render();
-    toast('Настройки сохранены');
+    toast('Настройки сохранены', 'success');
   } catch (error) { toast(error.message); }
 }
 function openPayment() { S.paymentOpen = true; render(); }
@@ -1651,7 +1651,7 @@ function applyPaymentPromo() {
 async function submitPayment() {
   const amount = Number(document.querySelector('#payment-amount')?.value || S.paymentAmount);
   const symbol = CURRENCY_BY_CODE[S.paymentCurrency]?.symbol || '₽';
-  if (!Number.isFinite(amount) || amount < 50) return toast(`Минимальная сумма пополнения — 50 ${symbol}`);
+  if (!Number.isFinite(amount) || amount < 50) return toast(`Минимальная сумма пополнения — 50 ${symbol}`, 'error');
   const amountCents = Math.round(amount * 100);
   try {
     const r = await api('/api/cx-deposit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amountCents }) });
@@ -1661,7 +1661,7 @@ async function submitPayment() {
       try { S.cxWeekly = await api('/api/cx-weekly'); } catch(_e){}
     }
     render();
-    toast('Баланс пополнен на ' + money(r.amountCents));
+    toast('Баланс пополнен на ' + money(r.amountCents), 'success');
   } catch (e) { toast(e.message || 'Ошибка пополнения', 'error'); }
 }
 async function openChat() {
@@ -1679,7 +1679,7 @@ async function openChat() {
 }
 async function submitSupportEmail() {
   const email = document.querySelector('#support-email')?.value?.trim().toLowerCase() || '';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(email)) return toast('Введите корректный email');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(email)) return toast('Введите корректный email', 'error');
   try {
     if (S.me?.authenticated) await api('/api/support/contact', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
@@ -1692,22 +1692,56 @@ async function submitSupportEmail() {
 }
 function closeChat() { S.chat = false; render(); }
 function setTicketCategory(value){S.ticketCategory=value;}
-function toast(text, type = '') {
+const TOAST_LIFETIME = 2800;
+const TOAST_LIMIT = 3;
+const TOAST_GLYPH = { error: '!', success: '✓', '': 'i' };
+
+function toastRoot() {
   let root = $('#toast-root');
   if (!root) {
     root = document.createElement('div');
     root.id = 'toast-root';
-    root.setAttribute('aria-live','polite');
+    root.setAttribute('aria-live', 'polite');
     document.body.appendChild(root);
   }
-  const t = document.createElement('div');
-  t.className = 'toast ' + (type || '');
-  t.innerHTML = `<span class="cx-toast-text">${esc(text)}</span><span class="cx-toast-close"><span class="cx-sep"></span><button type="button" aria-label="Закрыть">×</button></span>`;
-  root.appendChild(t);
-  const closeBtn = t.querySelector('.cx-toast-close button');
-  const remove = () => { if (t.parentNode) t.parentNode.removeChild(t); };
-  if (closeBtn) closeBtn.addEventListener('click', remove);
-  setTimeout(remove, 3200);
+  return root;
+}
+
+function dismissToast(node) {
+  if (!node || node.dataset.leaving === '1') return;
+  node.dataset.leaving = '1';
+  clearTimeout(Number(node.dataset.timer));
+  node.classList.add('is-leaving');
+  setTimeout(() => node.remove(), 200);
+}
+
+function toast(text, type = '') {
+  const message = String(text ?? '').trim();
+  if (!message) return;
+  const kind = type === 'error' || type === 'success' ? type : '';
+  const root = toastRoot();
+  const live = [...root.children].filter(node => node.dataset.leaving !== '1');
+
+  const twin = live.find(node => node.dataset.key === `${kind}|${message}`);
+  if (twin) {
+    clearTimeout(Number(twin.dataset.timer));
+    twin.classList.remove('is-pulse');
+    void twin.offsetWidth;
+    twin.classList.add('is-pulse');
+    twin.dataset.timer = String(setTimeout(() => dismissToast(twin), TOAST_LIFETIME));
+    return;
+  }
+
+  live.slice(0, Math.max(0, live.length - TOAST_LIMIT + 1)).forEach(dismissToast);
+
+  const node = document.createElement('div');
+  node.className = `toast ${kind}`.trim();
+  node.dataset.key = `${kind}|${message}`;
+  node.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  node.innerHTML = `<i class="cx-toast-ico" aria-hidden="true">${TOAST_GLYPH[kind]}</i><span class="cx-toast-text">${esc(message)}</span>`;
+  node.addEventListener('click', () => dismissToast(node));
+  root.appendChild(node);
+  node.dataset.timer = String(setTimeout(() => dismissToast(node), TOAST_LIFETIME));
 }
 
 Object.assign(window, {

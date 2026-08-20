@@ -35,7 +35,6 @@ const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
 try { fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true }); } catch {}
 
-
 const RARITIES = {
   consumer:   { name: 'Ширпотреб',       color: '#b0c3d9', rank: 0 },
   industrial: { name: 'Промышленное',    color: '#5e98d9', rank: 1 },
@@ -574,7 +573,6 @@ function cachedPriceForItem(item) {
   return { hit: false, price: 0 };
 }
 
-
 async function runPool(tasks, concurrency, onResult) {
   const results = new Array(tasks.length);
   let idx = 0;
@@ -599,7 +597,6 @@ async function runPool(tasks, concurrency, onResult) {
   await Promise.all(Array.from({ length: actualConcurrency }, worker));
   return { results, ok };
 }
-
 
 function preferredWearForSkin(skin) {
   const available = new Set((Array.isArray(skin?.wears) ? skin.wears : []).map(wear => String(wear?.name || '')));
