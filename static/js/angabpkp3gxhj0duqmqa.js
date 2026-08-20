@@ -564,14 +564,240 @@ function caseContents(caseData) {
   return caseData.contents.map(item => skinCard(item, { className: 'case-content-item' })).join('');
 }
 function caseIcon(caseData, large = false) {
+  if (caseData.image) {
+    return `<div class="case-visual case-visual-img ${large ? 'case-visual-large' : ''}"><img src="${esc(caseData.image)}" alt="${esc(caseData.name)}" loading="lazy" draggable="false"></div>`;
+  }
   return `<div class="case-visual ${large ? 'case-visual-large' : ''}"><div class="case-cube ${caseData.id === 'starter' ? 'case-cube-starter' : ''}"><i></i><i></i><i></i></div></div>`;
 }
+
+const CASE_SHOP_SECTIONS = [
+ {
+  "title": "NEW",
+  "ids": [
+   "minion-case",
+   "summer-set",
+   "visions-shadows-case",
+   "serpent-case",
+   "zeiss-laboratory",
+   "tactical-monolith",
+   "operation-quarantine",
+   "gta-vi",
+   "sunset-club",
+   "golden-hour"
+  ]
+ },
+ {
+  "title": "Цветная коллекция",
+  "ids": [
+   "black-and-white-case",
+   "green-case",
+   "yellow-case",
+   "blue-case",
+   "red-case"
+  ]
+ },
+ {
+  "title": "Limited",
+  "ids": [
+   "cs-warzone-case",
+   "operation-alpha-case",
+   "aurora-2-case",
+   "crystal-2-case",
+   "aurora-case"
+  ]
+ },
+ {
+  "title": "Наши сборки",
+  "ids": [
+   "magnum-case",
+   "exhibition-case",
+   "gauntlet-case",
+   "zenith-case",
+   "cache",
+   "premium-cache",
+   "new-gloves"
+  ]
+ },
+ {
+  "title": "Специальная коллекция",
+  "ids": [
+   "rift-case",
+   "pro-league-2013-case",
+   "operation-iron-claw-case",
+   "megawatt-case",
+   "operation-inferno-weapon-case"
+  ]
+ },
+ {
+  "title": "Бомж кейсы",
+  "ids": [
+   "cleaver-case",
+   "blowback-case",
+   "sigma-2-case",
+   "sigma-case",
+   "eclipse-case"
+  ]
+ },
+ {
+  "title": "Редкость",
+  "ids": [
+   "milspec",
+   "restricted",
+   "classified",
+   "covert",
+   "knife"
+  ]
+ },
+ {
+  "title": "Люкс",
+  "ids": [
+   "ultraviolet",
+   "lore",
+   "crimson-web",
+   "doppler",
+   "tiger-tooth",
+   "fade-case",
+   "sapphire-case",
+   "emerald-case",
+   "ruby-case",
+   "black-pearl-case"
+  ]
+ },
+ {
+  "title": "Премиум",
+  "ids": [
+   "premium-case-1",
+   "premium-case-2",
+   "premium-case-3",
+   "premium-case-4",
+   "premium-case-5"
+  ]
+ },
+ {
+  "title": "Ножевой кейс",
+  "ids": [
+   "skeleton-knife",
+   "stiletto-knife",
+   "m9-bayonet",
+   "karambit",
+   "butterfly-knife"
+  ]
+ },
+ {
+  "title": "Арсенал",
+  "ids": [
+   "charm",
+   "mac-10",
+   "mp9",
+   "p90",
+   "ssg-08",
+   "usp-s",
+   "glock-18",
+   "music-kit",
+   "desert-eagle",
+   "m4a1-s",
+   "m4a4",
+   "awp",
+   "ak-47",
+   "agent-case",
+   "gloves"
+  ]
+ },
+ {
+  "title": "Кейсы CS2",
+  "ids": [
+   "genesis",
+   "sealed-dead-hand",
+   "snakebite-case",
+   "revolution-case",
+   "clutch-case",
+   "recoil-case",
+   "fracture-case",
+   "falchion-case",
+   "danger-zone-case",
+   "gallery-case",
+   "prisma-case",
+   "prisma-2-case",
+   "horizon-case",
+   "kilowatt-case",
+   "dreams-nightmares-case",
+   "cs20-case",
+   "shadow-case",
+   "shattered-web-case",
+   "operation-phoenix-weapon-case",
+   "operation-riptide-case",
+   "revolver-case",
+   "operation-wildfire-case",
+   "spectrum-2-case",
+   "spectrum-case",
+   "operation-broken-fang-case",
+   "operation-hydra-case"
+  ]
+ },
+ {
+  "title": "Коллекции",
+  "ids": [
+   "the-ascent-collection",
+   "the-boreal-collection",
+   "the-radiant-collection",
+   "the-harlequin-collection",
+   "the-2018-inferno-collection",
+   "the-achroma-collection",
+   "the-train-2025-collection",
+   "the-graphic-design-collection",
+   "the-havoc-collection",
+   "the-anubis-collection",
+   "the-ancient-collection",
+   "the-2021-vertigo-collection",
+   "the-control-collection",
+   "the-2021-dust-2-collection",
+   "the-canals-collection",
+   "the-st-marc-collection"
+  ]
+ }
+];
+const CASE_SECTION_BY_ID = new Map();
+for (const section of CASE_SHOP_SECTIONS) for (const id of section.ids) CASE_SECTION_BY_ID.set(id, section.title);
+const CASE_NEW_IDS = new Set(["minion-case","summer-set","sunset-club","golden-hour"]);
+
+function casePriceTag(caseData) {
+  if (!caseData.priceCents) return '<span class="case-card-free">БЕСПЛАТНО</span>';
+  const coins = Math.round(Number(caseData.priceCents) / 100);
+  return `<span class="case-card-price"><b>${coins.toLocaleString('ru-RU')}</b>${coinImg}</span>`;
+}
+function caseShopCard(caseData, index) {
+  const isNew = CASE_NEW_IDS.has(caseData.id);
+  return `<article class="case-shop-card ${isNew ? 'case-card-new' : ''}" style="--i:${index}" role="button" tabindex="0"
+      onclick="selectCase('${esc(caseData.id)}')"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectCase('${esc(caseData.id)}')}">
+      ${isNew ? '<span class="case-card-badge">NEW</span>' : ''}
+      <div class="case-card-media">${caseIcon(caseData)}</div>
+      <div class="case-card-info"><h3 class="case-card-name">${esc(caseData.name)}</h3>${casePriceTag(caseData)}</div>
+    </article>`;
+}
 function casesPage() {
-  if (!S.me?.authenticated) return loginRequired('КЕЙСЫ', 'Войдите в аккаунт. Выпавшие скины будут сохранены в инвентаре сайта, а не в Steam.');
-  return `<div class="case-shop-grid">${S.cases.map(caseData => `<article class="case-shop-card ${caseData.id === 'starter' ? 'starter-case' : ''}">
-      ${caseIcon(caseData)}<h2>${esc(caseData.name)}</h2><b>${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</b>
-      <button onclick="selectCase('${esc(caseData.id)}')" ${!caseData.available ? 'disabled' : ''}>${caseData.available ? 'КУПИТЬ' : 'УЖЕ ОТКРЫТ'}</button>
-    </article>`).join('')}</div>`;
+  const byId = new Map(S.cases.map(item => [item.id, item]));
+  const used = new Set();
+  let index = 0;
+  const parts = [];
+  for (const section of CASE_SHOP_SECTIONS) {
+    const cards = [];
+    for (const id of section.ids) {
+      const caseData = byId.get(id);
+      if (!caseData) continue;
+      used.add(id);
+      cards.push(caseShopCard(caseData, index++));
+    }
+    if (cards.length) {
+      parts.push(`<section class="case-shop-section" style="--i:${index}"><h2 class="case-shop-heading"><span>${esc(section.title)}</span><i></i></h2><div class="case-shop-grid">${cards.join('')}</div></section>`);
+    }
+  }
+  const rest = S.cases.filter(item => !used.has(item.id));
+  if (rest.length) {
+    parts.push(`<section class="case-shop-section" style="--i:${index}"><h2 class="case-shop-heading"><span>Другие кейсы</span><i></i></h2><div class="case-shop-grid">${rest.map(item => caseShopCard(item, index++)).join('')}</div></section>`);
+  }
+  if (!parts.length) return '<div class="empty"><h2>Кейсы скоро появятся</h2></div>';
+  return `<div class="case-shop">${parts.join('')}</div>`;
 }
 function rouletteCard(item) {
   return `<div class="roulette-card" ${rarityStyle(item)}>${priceTag(item)}${item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : ''}${art(item)}<strong>${esc(item.weapon || item.name)}</strong><small>${esc(item.skin || item.marketName || '')}</small>${rarityLine()}</div>`;
@@ -1053,21 +1279,12 @@ function syncCaseBackdrop() {
     layer = document.createElement('div');
     layer.id = 'cx-case-backdrop';
     layer.setAttribute('aria-hidden', 'true');
-    layer.innerHTML = '<video class="cx-case-backdrop-video" src="/chunks/caseBG.webm" poster="/chunks/caseBG.webp" autoplay loop muted playsinline preload="none"></video>';
+    layer.innerHTML = '<img class="cx-case-backdrop-video" src="/cases/case-bg-poster2.webp" alt="" draggable="false">';
     document.body.insertBefore(layer, document.body.firstChild);
   }
-  const active = S.page === 'case';
+  const active = S.page === 'case' || S.page === 'cases';
   layer.classList.toggle('is-active', active);
   document.body.classList.toggle('cx-case-view', active);
-  const video = layer.firstElementChild;
-  if (!video) return;
-  if (active) {
-    if (video.preload !== 'auto') video.preload = 'auto';
-    const playback = video.play();
-    if (playback && playback.catch) playback.catch(() => {});
-  } else if (!video.paused) {
-    video.pause();
-  }
 }
 
 let imageFallbackTimer = null;

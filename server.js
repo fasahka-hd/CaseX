@@ -757,49 +757,193 @@ async function refreshSteamPrices(limit = 0) {
   return { checked: items.length, updated: ok };
 }
 
-const DEFAULT_CASES = [
-  {
-    id: 'starter', name: 'СТАРТОВЫЙ КЕЙС', priceCents: 0, once: true, enabled: true,
-    description: 'Один бесплатный кейс для нового игрока',
-    image: '',
+const CASE_CONTENT_PRESETS = {
+  junk: [
+    ['p250-sand-dune', 40], ['duals-marina', 26], ['g3-flux', 18],
+    ['xm1014-red-python', 9], ['mag7-heat', 4.5], ['negev-power-loader', 2], ['mp9-bioleak', 0.5]
+  ],
+  basic: [
+    ['mp7-cirrus', 30], ['aug-chameleon', 22], ['galil-eco', 18], ['ssg-detour', 13],
+    ['ump-metal-flowers', 8], ['m249-emerald-poison-dart', 5], ['p250-vino-primo', 2.8], ['glock-neo-noir', 1.2]
+  ],
+  mid: [
+    ['ak47-elite-build', 26], ['mp7-cirrus', 20], ['aug-bengal-tiger', 16], ['mac10-whitefish', 12],
+    ['ump-momentum', 9], ['mac10-toybox', 6], ['mp7-nemesis', 4], ['p250-see-ya-later', 3],
+    ['tec9-avalanche', 1.6], ['awp-atheris', 0.4]
+  ],
+  high: [
+    ['awp-worm-god', 24], ['ak47-slate', 20], ['m4a4-dragon-king', 16], ['famas-roll-cage', 12],
+    ['m4a1-mecha-industries', 8], ['p90-shallow-grave', 6], ['mp9-hot-rod', 3],
+    ['usp-cortex', 1.2], ['glock-vogue', 0.3]
+  ],
+  top: [
+    ['usp-cortex', 22], ['mac10-disco-tech', 18], ['ak47-redline', 15], ['m4a4-royal-paladin', 12],
+    ['m4a1-golden-coil', 9], ['m4a4-the-emperor', 6], ['ak47-aquamarine-revenge', 4],
+    ['usp-neo-noir', 2], ['m4a1-hyper-beast', 1], ['ak47-neon-rider', 0.25]
+  ],
+  elite: [
+    ['m4a1-hyper-beast', 20], ['ak47-neon-rider', 16], ['awp-asiimov', 13], ['awp-neo-noir', 10],
+    ['deagle-printstream', 8], ['glock-fade', 6], ['usp-kill-confirmed', 4],
+    ['awp-lightning-strike', 2], ['ak47-vulcan', 0.8], ['karambit-crimson-web', 0.08]
+  ],
+  knife: [
+    ['karambit-fade', 16], ['karambit-doppler', 18], ['bayonet-marble-fade', 19], ['butterfly-slaughter', 15],
+    ['flip-doppler', 14], ['gut-tiger-tooth', 11], ['falchion-case-hardened', 6.9], ['karambit-crimson-web', 0.1]
+  ],
+  legend: [
+    ['ak47-wild-lotus', 28], ['awp-dragon-lore', 26], ['awp-medusa', 22], ['m4a4-howl', 13],
+    ['karambit-fade', 6], ['butterfly-slaughter', 4], ['awp-lightning-strike', 1]
+  ]
+};
+const CASE_KNIFE_IDS = new Set(['knife', 'skeleton-knife', 'stiletto-knife', 'm9-bayonet', 'karambit', 'butterfly-knife', 'gloves', 'new-gloves']);
+const CASE_LEGEND_IDS = new Set(['ultraviolet', 'lore', 'crimson-web', 'doppler', 'tiger-tooth', 'fade-case', 'sapphire-case', 'emerald-case', 'ruby-case', 'black-pearl-case']);
+function caseTierFor(entry) {
+  if (CASE_LEGEND_IDS.has(entry.id)) return 'legend';
+  if (CASE_KNIFE_IDS.has(entry.id)) return 'knife';
+  const p = Number(entry.coins || 0);
+  if (p >= 8000) return 'elite';
+  if (p >= 2500) return 'top';
+  if (p >= 700) return 'high';
+  if (p >= 150) return 'mid';
+  if (p >= 45) return 'basic';
+  return 'junk';
+}
+function buildDefaultCases() {
+  return CASE_CATALOG.map(entry => ({
+    id: entry.id,
+    name: entry.name,
+    description: `Кейс из раздела «${entry.section}»`,
+    priceCents: Math.round(Number(entry.coins || 0) * 100),
+    once: false,
+    enabled: true,
+    image: entry.image || '',
     max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
-    contents: [
-      ['p250-sand-dune', 46], ['awp-safari-mesh', 28], ['mp7-cirrus', 16],
-      ['ak47-elite-build', 7], ['awp-worm-god', 2.5], ['usp-cortex', 0.5]
-    ]
-  },
-  {
-    id: 'neon', name: 'NEON CASE', priceCents: 24900, enabled: true,
-    description: 'Яркие скины разных редкостей',
-    image: '',
-    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
-    contents: [
-      ['mp7-cirrus', 36], ['ak47-elite-build', 27], ['awp-worm-god', 19],
-      ['ak47-slate', 11], ['usp-cortex', 5], ['glock-vogue', 1.6], ['m4a1-hyper-beast', 0.4]
-    ]
-  },
-  {
-    id: 'classified', name: 'CLASSIFIED', priceCents: 99900, enabled: true,
-    description: 'Повышенный шанс на розовую редкость',
-    image: '',
-    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
-    contents: [
-      ['awp-worm-god', 34], ['ak47-slate', 27], ['usp-cortex', 16],
-      ['glock-vogue', 11], ['mac10-disco-tech', 8], ['m4a1-hyper-beast', 3], ['ak47-neon-rider', 1]
-    ]
-  },
-  {
-    id: 'legend', name: 'LEGEND', priceCents: 299900, enabled: true,
-    description: 'Редкие красные и контрабандные предметы',
-    image: '',
-    max_openings: 0, level_min: 0, starts_at: null, ends_at: null, discount_percent: 0,
-    contents: [
-      ['usp-cortex', 30], ['glock-vogue', 24], ['mac10-disco-tech', 18],
-      ['m4a1-hyper-beast', 12], ['ak47-neon-rider', 8], ['awp-asiimov', 5],
-      ['deagle-printstream', 2], ['ak47-wild-lotus', 0.8], ['m4a4-howl', 0.2]
-    ]
-  }
+    contents: CASE_CONTENT_PRESETS[caseTierFor(entry)]
+  }));
+}
+const CASE_CATALOG = [
+  { id: "minion-case", name: "Миньон Кейс", section: "NEW", coins: 99, image: "/cases/cases/93f02e074af0972cd1e45a6e2cfd2e12-6a5e24ef3dd3f.webp" },
+  { id: "summer-set", name: "Летний Набор", section: "NEW", coins: 199, image: "/cases/cases/90ce3bf08cab6207e9fc1f0f46a70997-6a6c8e41f2577.webp" },
+  { id: "visions-shadows-case", name: "Кейс «Видения и тени»", section: "NEW", coins: 299, image: "/cases/cases/a6c5f5f3f5b4fd3460a0fc4783131a45-69f88baf55b43.webp" },
+  { id: "serpent-case", name: "Кейс «Змей»", section: "NEW", coins: 499, image: "/cases/cases/4df3e66523449b4c7417a9dc1dcb6239-6a01b2a7c07df.webp" },
+  { id: "zeiss-laboratory", name: "Лаборатория ZEISS", section: "NEW", coins: 699, image: "/cases/cases/2ce8f1c2dfab9491d909de50b35be476-6a185935d483c.webp" },
+  { id: "tactical-monolith", name: "Тактический монолит", section: "NEW", coins: 999, image: "/cases/cases/928a2f0f5b15a355466f1a68fd8feab5-6a185940ed4d5.webp" },
+  { id: "operation-quarantine", name: "Операция «Карантин»", section: "NEW", coins: 1399, image: "/cases/cases/1540326ca76e8c7c1c3e897fb7d213dd-6a18593cc07b1.webp" },
+  { id: "gta-vi", name: "GTA VI", section: "NEW", coins: 6500, image: "/cases/cases/cb99575c74e27e6e39a5b0bac0539c8c-6a3beee690af6.webp" },
+  { id: "sunset-club", name: "Летний Клуб", section: "NEW", coins: 13999, image: "/cases/cases/c36112d1672bf7128a6573dc2195c8c0-6a6c9ffcdf557.webp" },
+  { id: "golden-hour", name: "Золотой час", section: "NEW", coins: 20999, image: "/cases/cases/3b94c5a5d126b08302e71405bb474a40-6a6c8a91e37b0.webp" },
+  { id: "black-and-white-case", name: "Черно-Белый Кейс", section: "Цветная коллекция", coins: 479, image: "/cases/cases/65b6906326d6ca3fe91b7787945e6fca-69f2344781428.webp" },
+  { id: "green-case", name: "Зеленый Кейс", section: "Цветная коллекция", coins: 799, image: "/cases/cases/eabd3469fd7ec5bc96eb5f62d5c7bebd-69f2388edc437.webp" },
+  { id: "yellow-case", name: "Желтый Кейс", section: "Цветная коллекция", coins: 999, image: "/cases/cases/79064f3139f208b1ef400db6c9255e49-69f235315a943.webp" },
+  { id: "blue-case", name: "Синий Кейс", section: "Цветная коллекция", coins: 1399, image: "/cases/cases/e1cf81011cdc5d8f318268b167fc0744-69f235527b7b2.webp" },
+  { id: "red-case", name: "Красный кейс", section: "Цветная коллекция", coins: 1999, image: "/cases/cases/f79c558f4e2a8ab0e6e7fe227d70d935-69f237b06945d.webp" },
+  { id: "cs-warzone-case", name: "Кейс «Зона боевых действий CS»", section: "Limited", coins: 999, image: "/cases/cases/9ff0366e512e73d4265a2a6e4704948c-69f2344c58ac9.webp" },
+  { id: "operation-alpha-case", name: "Кейс операции «Альфа»", section: "Limited", coins: 1599, image: "/cases/cases/82e904141c3dc488637c9eaa46b8a86c-69f23732f20ca.webp" },
+  { id: "aurora-2-case", name: "Кейс «Аврора 2»", section: "Limited", coins: 1899, image: "/cases/cases/f7f0f9485526105572b8cda36fb0d82d-69f232c81fe80.webp" },
+  { id: "crystal-2-case", name: "Кейс «Кристалл 2»", section: "Limited", coins: 2599, image: "/cases/cases/76139d635bc17e4cc53027771f157530-69f234402a313.webp" },
+  { id: "aurora-case", name: "Кейс «Аврора»", section: "Limited", coins: 2999, image: "/cases/cases/f965c92d5573e3fd9fe77e3b6c28d626-69f232cb686f9.webp" },
+  { id: "magnum-case", name: "Кейс «Магнум»", section: "Наши сборки", coins: 19, image: "/cases/cases/fcfab37f4b45e0e67ef2dd1315bff79d-69f23683ac862.webp" },
+  { id: "exhibition-case", name: "Кейс «Экспозиция»", section: "Наши сборки", coins: 69, image: "/cases/cases/be9c7c74f5ef5405b967494fb5053701-6a01af6bcf130.webp" },
+  { id: "gauntlet-case", name: "Кейс «Испытание»", section: "Наши сборки", coins: 149, image: "/cases/cases/7a913fb2cde9393ff0980b4b7cae8271-6a039415d2c7f.webp" },
+  { id: "zenith-case", name: "Кейс «Зенит»", section: "Наши сборки", coins: 159, image: "/cases/cases/b04feb192e63585861606190c27d0b91-69f23bb83a145.webp" },
+  { id: "cache", name: "Cache", section: "Наши сборки", coins: 199, image: "/cases/cases/5572a3546e1dd9f338a1ed95a0cf7803-69f20b684a17a.webp" },
+  { id: "premium-cache", name: "Премиум Cache", section: "Наши сборки", coins: 17999, image: "/cases/cases/64e1398ebe1b76e13f9c6a5018ee426a-69f342b22a615.webp" },
+  { id: "new-gloves", name: "Новые Перчатки", section: "Наши сборки", coins: 22999, image: "/cases/cases/9a63241b35e3adf3be25d8d1906c6fd4-69f2372bac02f.webp" },
+  { id: "rift-case", name: "Кейс «Раскол»", section: "Специальная коллекция", coins: 100, image: "/cases/cases/bb3577aa38e07744fb68f9cdac06eee3-69f238f1c31e5.webp" },
+  { id: "pro-league-2013-case", name: "Кейс «Про-лига 2013»", section: "Специальная коллекция", coins: 200, image: "/cases/cases/46b96ae39571f212d0c2d8b22ad01d46-69f2388a9d172.webp" },
+  { id: "operation-iron-claw-case", name: "Кейс операции «Железный коготь»", section: "Специальная коллекция", coins: 300, image: "/cases/cases/70b43bc24e9d11a3aa42aea8d501bff8-69f2375ecb49d.webp" },
+  { id: "megawatt-case", name: "Кейс «Мегаватт»", section: "Специальная коллекция", coins: 400, image: "/cases/cases/14cc666a1b65e7036e6348426dc2c872-69f23687b3b1a.webp" },
+  { id: "operation-inferno-weapon-case", name: "Оружейный кейс операции «Инферно»", section: "Специальная коллекция", coins: 500, image: "/cases/cases/6a311f747e6799a0dc7c55df07c14596-69f2374ab04d4.webp" },
+  { id: "cleaver-case", name: "Кейс «Тесак»", section: "Бомж кейсы", coins: 29, image: "/cases/cases/1ffae148b49584b49aa27aa70d5b7835-69f234302cf04.webp" },
+  { id: "blowback-case", name: "Кейс «Ответный удар»", section: "Бомж кейсы", coins: 35, image: "/cases/cases/f7fda6c32a481975511bd6d3eef48db1-69f2334d1b42c.webp" },
+  { id: "sigma-2-case", name: "Кейс «Сигма 2»", section: "Бомж кейсы", coins: 55, image: "/cases/cases/fc3fef7ae51030853dc1519ffe67ce28-69f24294597de.webp" },
+  { id: "sigma-case", name: "Кейс «Сигма»", section: "Бомж кейсы", coins: 59, image: "/cases/cases/595e7542a01ede4e576695684139608f-69f239718a76a.webp" },
+  { id: "eclipse-case", name: "Кейс «Затмение»", section: "Бомж кейсы", coins: 79, image: "/cases/cases/d6d17111fa4221ab2b32e37000ce9744-69f23542aa3a7.webp" },
+  { id: "milspec", name: "Армейское", section: "Редкость", coins: 39, image: "/cases/cases/ccf334afb6603b2b0b30f6a0d3683c1e-69f231f981a0f.webp" },
+  { id: "restricted", name: "Запрещенное", section: "Редкость", coins: 159, image: "/cases/cases/4928aeea8375fa94e65a5f0fd835fd83-69f2320c43d8b.webp" },
+  { id: "classified", name: "Засекреченное", section: "Редкость", coins: 649, image: "/cases/cases/d53eee91241e8cf6e9fef02295752d4a-69f23261a5212.webp" },
+  { id: "covert", name: "Тайное", section: "Редкость", coins: 5899, image: "/cases/cases/5d523f85bafce30f9c93bef22dc73a5d-69f231e228a6b.webp" },
+  { id: "knife", name: "Ножевой", section: "Редкость", coins: 12499, image: "/cases/cases/bc61edd4a117b3ea9de48b7090f06f3c-69f2361d0fd29.webp" },
+  { id: "ultraviolet", name: "Ультрафиолет", section: "Люкс", coins: 28999, image: "/cases/cases/ef4ae1f9a13533b9e1233185e836b7d0-69f23b9e1936c.webp" },
+  { id: "lore", name: "Легенды", section: "Люкс", coins: 28999, image: "/cases/cases/cacb6e2503de919d69ed1058eb97ea72-69f2362317f8d.webp" },
+  { id: "crimson-web", name: "Кровавая Паутина", section: "Люкс", coins: 29999, image: "/cases/cases/2d880dc48e62a97e088aac10b778c0ce-69f234377d247.webp" },
+  { id: "doppler", name: "Волны", section: "Люкс", coins: 34999, image: "/cases/cases/fea9d5a9d6ff20e3ee673ec18991e0ac-69f234f757f4c.webp" },
+  { id: "tiger-tooth", name: "Зуб Тигра", section: "Люкс", coins: 39999, image: "/cases/cases/5ca1f400bb3ae35371cddc0ee5634301-69f23b974eab6.webp" },
+  { id: "fade-case", name: "Градиент Кейс", section: "Люкс", coins: 49999, image: "/cases/cases/90c32d03f730344fd157d310d5d38db3-69f2355ce903d.webp" },
+  { id: "sapphire-case", name: "Сапфировый Кейс", section: "Люкс", coins: 119999, image: "/cases/cases/ab145ee7a19df13574844f5c07eeadd5-69f238fbe3f2c.webp" },
+  { id: "emerald-case", name: "Изумруд Кейс", section: "Люкс", coins: 129999, image: "/cases/cases/ff5b90d302dd650aac5b47b0a74572c2-69f2354d7b4e9.webp" },
+  { id: "ruby-case", name: "Рубиновый Кейс", section: "Люкс", coins: 139999, image: "/cases/cases/1d2da436498122f6a532473ac63e994d-69f238f6df0c9.webp" },
+  { id: "black-pearl-case", name: "Черная Жемчужина", section: "Люкс", coins: 159999, image: "/cases/cases/a571f1a3e498eb0676940c1506d9b689-69f2333d21999.webp" },
+  { id: "premium-case-1", name: "Премиум-кейс 1", section: "Премиум", coins: 4999, image: "/cases/cases/df4d5606781c7891d5f313ab6f3e4479-69f2334902591.webp" },
+  { id: "premium-case-2", name: "Премиум-кейс 2", section: "Премиум", coins: 8999, image: "/cases/cases/128b2e480e986fef650c9335c7642951-69f23350a6ec1.webp" },
+  { id: "premium-case-3", name: "Премиум-кейс 3", section: "Премиум", coins: 13999, image: "/cases/cases/e6074a82ec28cc6bb7b93779b5d3b07b-69f23caea4ecb.webp" },
+  { id: "premium-case-4", name: "Премиум-кейс 4", section: "Премиум", coins: 19999, image: "/cases/cases/0727b1d4b460b96ed996f4dde9c47433-69f2381fb2a31.webp" },
+  { id: "premium-case-5", name: "Премиум-кейс 5", section: "Премиум", coins: 29999, image: "/cases/cases/b82d55f13d56134fa784033bf044612a-69f23ba8d1ae6.webp" },
+  { id: "skeleton-knife", name: "Скелетный нож", section: "Ножевой кейс", coins: 27999, image: "/cases/cases/ca442d2f03568f0594fa258b6e7d30d5-69f239941c9df.webp" },
+  { id: "stiletto-knife", name: "Стилет", section: "Ножевой кейс", coins: 27999, image: "/cases/cases/567d08ad5cbbcb5f9ba825559a864beb-69f23a0f60270.webp" },
+  { id: "m9-bayonet", name: "Штык-нож M9", section: "Ножевой кейс", coins: 79999, image: "/cases/cases/48761f0f5caa82b7fe9fedb70181196d-69f2367b114a6.webp" },
+  { id: "karambit", name: "Керамбит", section: "Ножевой кейс", coins: 89999, image: "/cases/cases/2c1e591d837487e13d005fc5bf39db7a-69f23610ce01a.webp" },
+  { id: "butterfly-knife", name: "Нож-бабочка", section: "Ножевой кейс", coins: 99999, image: "/cases/cases/158a0a5aa7d2526049db9474852b21f2-69f2335465efd.webp" },
+  { id: "charm", name: "Брелоки", section: "Арсенал", coins: 29, image: "/cases/cases/dbb0ed9f0a27a5f0ab09124107bc4c58-69f2323b68792.webp" },
+  { id: "mac-10", name: "MAC-10", section: "Арсенал", coins: 69, image: "/cases/cases/fb22654aa3c52cbb071baea9a80f138a-69f23680b5b5f.webp" },
+  { id: "mp9", name: "MP9", section: "Арсенал", coins: 89, image: "/cases/cases/868b8fdaf91e7fc045efe76c32808015-69f2368da4583.webp" },
+  { id: "p90", name: "P90", section: "Арсенал", coins: 99, image: "/cases/cases/24e56d094e2ee3a140026ddb22428fed-69f2381b811c1.webp" },
+  { id: "ssg-08", name: "SSG 08", section: "Арсенал", coins: 129, image: "/cases/cases/6bffbe8e5ec6f565363323e23d403ca2-69f239aae1c9b.webp" },
+  { id: "usp-s", name: "USP-S", section: "Арсенал", coins: 129, image: "/cases/cases/04e86a66872c09afd0e09b18df9b6c90-69f23baf27777.webp" },
+  { id: "glock-18", name: "Glock-18", section: "Арсенал", coins: 129, image: "/cases/cases/6989c4768643eeb52a4e2bc82ca7d8e6-69f235c48e4a1.webp" },
+  { id: "music-kit", name: "Музыкальный Набор", section: "Арсенал", coins: 139, image: "/cases/cases/ee15440187fbaaac2210e9ddcdb7345b-69f23691db5ed.webp" },
+  { id: "desert-eagle", name: "Desert Eagle", section: "Арсенал", coins: 149, image: "/cases/cases/3b1684da1c025953e6c4677c18a13df0-69f234f0822ea.webp" },
+  { id: "m4a1-s", name: "M4A1-S", section: "Арсенал", coins: 179, image: "/cases/cases/e8d062327361623afcb980c3a4e9cae2-69f236261cf9a.webp" },
+  { id: "m4a4", name: "M4A4", section: "Арсенал", coins: 199, image: "/cases/cases/bc93540a4ffce5c1ef1d54cfe547a39a-69f2362b84d4c.webp" },
+  { id: "awp", name: "AWP", section: "Арсенал", coins: 249, image: "/cases/cases/96f9926e17a26a01726883a799edb055-69f23338d2adb.webp" },
+  { id: "ak-47", name: "AK-47", section: "Арсенал", coins: 279, image: "/cases/cases/9303cd477cfbd3ed268ea25ced90f667-69f232c387eb2.webp" },
+  { id: "agent-case", name: "Агент Кейс", section: "Арсенал", coins: 1799, image: "/cases/cases/f99ad0d2b1db80443bfe97a12793559a-69f2329fb905d.webp" },
+  { id: "gloves", name: "Перчаточный кейс", section: "Арсенал", coins: 13999, image: "/cases/cases/6a26f96b3db50d9e54063e66e94de104-69f235c7882a9.webp" },
+  { id: "genesis", name: "Терминал «Генезис»", section: "Кейсы CS2", coins: 89, image: "/cases/cases/29b57b4fa61dc1b5cb4b61d59bcf3324-69f235bf7866d.webp" },
+  { id: "sealed-dead-hand", name: "Терминал «Мёртвая рука»", section: "Кейсы CS2", coins: 119, image: "/cases/cases/d1b8cf50f45a1c127312be1df2f6bf0a-69f234eb6cb38.webp" },
+  { id: "snakebite-case", name: "Кейс «Змеиный укус»", section: "Кейсы CS2", coins: 180, image: "/cases/cases/e6dddea7868795d41800898c1c5c7b41-69f239983b6b5.webp" },
+  { id: "revolution-case", name: "Кейс «Революция»", section: "Кейсы CS2", coins: 200, image: "/cases/cases/cfa1c3773ee0eaa79be92cbae2d10faf-69f238a37d899.webp" },
+  { id: "clutch-case", name: "Кейс «Решающий момент»", section: "Кейсы CS2", coins: 210, image: "/cases/cases/24a026395e3861506f5dbff40faf31cf-69f23433b03ef.webp" },
+  { id: "recoil-case", name: "Гремучий кейс", section: "Кейсы CS2", coins: 219, image: "/cases/cases/84b397dec78c08cf2fdae01ac70bac66-69f2389bbde94.webp" },
+  { id: "fracture-case", name: "Кейс «Разлом»", section: "Кейсы CS2", coins: 235, image: "/cases/cases/18b58b8f911fc18f873cfd728ee08180-69f235b58e018.webp" },
+  { id: "falchion-case", name: "Кейс «Фальшион»", section: "Кейсы CS2", coins: 240, image: "/cases/cases/c99e710c9c0353d94ba345511a8468ea-69f235604a885.webp" },
+  { id: "danger-zone-case", name: "Кейс «Запретная зона»", section: "Кейсы CS2", coins: 260, image: "/cases/cases/4993abb6eacf04dbb2813ab42cd47320-69f234e5e6f24.webp" },
+  { id: "gallery-case", name: "Галерейный кейс", section: "Кейсы CS2", coins: 295, image: "/cases/cases/8aebaacce73e66ae90ea293d1f063ae5-69f235b9dfb3b.webp" },
+  { id: "prisma-case", name: "Кейс «Призма»", section: "Кейсы CS2", coins: 320, image: "/cases/cases/b5dc58d4183bdf383d983d33b2257a80-69f2387d44e51.webp" },
+  { id: "prisma-2-case", name: "Кейс «Призма 2»", section: "Кейсы CS2", coins: 333, image: "/cases/cases/1b1f69ce4a7097f99a91b17f592edd5e-69f23878f4143.webp" },
+  { id: "horizon-case", name: "Кейс «Горизонт»", section: "Кейсы CS2", coins: 335, image: "/cases/cases/f2d5773529f443ab84f59ad4dd72ad64-69f235ce263a3.webp" },
+  { id: "kilowatt-case", name: "Кейс «Киловатт»", section: "Кейсы CS2", coins: 350, image: "/cases/cases/840158fcaa2f8bdc85a97728032eb321-69f2361729a58.webp" },
+  { id: "dreams-nightmares-case", name: "Кейс «Грёзы и кошмары»", section: "Кейсы CS2", coins: 350, image: "/cases/cases/9f42fa79942e6e56d236610f6a8bbd21-69f234fbd8d17.webp" },
+  { id: "cs20-case", name: "Кейс CS20", section: "Кейсы CS2", coins: 380, image: "/cases/cases/9037079a0e36afe5ee493ccfdd0b2206-69f234d695f6a.webp" },
+  { id: "shadow-case", name: "Тёмный кейс", section: "Кейсы CS2", coins: 390, image: "/cases/cases/c1324a3747c26e488a6de3248586b429-69f2390246400.webp" },
+  { id: "shattered-web-case", name: "Кейс «Расколотая сеть»", section: "Кейсы CS2", coins: 450, image: "/cases/cases/667612fabf613b9b790b819b279d4b55-69f2390d5381d.webp" },
+  { id: "operation-phoenix-weapon-case", name: "Оружейный кейс операции «Феникс»", section: "Кейсы CS2", coins: 550, image: "/cases/cases/64d01f3653f349636855fa95f92bb0f7-69f2378be4844.webp" },
+  { id: "operation-riptide-case", name: "Кейс операции «Хищные воды»", section: "Кейсы CS2", coins: 580, image: "/cases/cases/80ade85e7bde8b501cc8289046c10817-69f237a5a29ae.webp" },
+  { id: "revolver-case", name: "Револьверный кейс", section: "Кейсы CS2", coins: 650, image: "/cases/cases/4368a2c33418f7d9804073bcec433a42-69f238edccb8c.webp" },
+  { id: "operation-wildfire-case", name: "Кейс операции «Дикое пламя»", section: "Кейсы CS2", coins: 690, image: "/cases/cases/b38376d2bc7fe07f5ccd3db6b36a9db5-69f238171f12a.webp" },
+  { id: "spectrum-2-case", name: "Кейс «Спектр 2»", section: "Кейсы CS2", coins: 690, image: "/cases/cases/307be3339d7fd9e150099836df3370ae-69f239a1172ce.webp" },
+  { id: "spectrum-case", name: "Кейс «Спектр»", section: "Кейсы CS2", coins: 800, image: "/cases/cases/791df84beba637655cfd5c9248517855-69f239a4ae268.webp" },
+  { id: "operation-broken-fang-case", name: "Кейс операции «Сломанный клык»", section: "Кейсы CS2", coins: 1050, image: "/cases/cases/3863ff298dd90ec8cdf2dc42547ebf35-69f237380bdaf.webp" },
+  { id: "operation-hydra-case", name: "Кейс операции «Гидра»", section: "Кейсы CS2", coins: 3000, image: "/cases/cases/dfcf1c2e66db26305afa02b38f186016-69f237420bd01.webp" },
+  { id: "the-ascent-collection", name: "Коллекция «Ascent»", section: "Коллекции", coins: 25, image: "/cases/cases/693fab58189d4a26ed6a386109f41510-69f23a65ebef3.webp" },
+  { id: "the-boreal-collection", name: "Коллекция «Boreal»", section: "Коллекции", coins: 39, image: "/cases/cases/567bc6838b234a522d2cc433ac98799d-69f23a6d76907.webp" },
+  { id: "the-radiant-collection", name: "Коллекция «Radiant»", section: "Коллекции", coins: 42, image: "/cases/cases/1cffd4efea7383c1647f16a04452dd5c-69f23b7a38e8a.webp" },
+  { id: "the-harlequin-collection", name: "Коллекция «Harlequin»", section: "Коллекции", coins: 60, image: "/cases/cases/3b42dca2ab9ff58f6bf8f78f63802820-69f23b6927dfb.webp" },
+  { id: "the-2018-inferno-collection", name: "Коллекция «Inferno 2018»", section: "Коллекции", coins: 60, image: "/cases/cases/eb211ffb3a32cb6cf48041b3ddb3b48e-69f23a179f243.webp" },
+  { id: "the-achroma-collection", name: "Коллекция «Achroma»", section: "Коллекции", coins: 79, image: "/cases/cases/654a9abf71c82068ca75bae413866bae-69f23a2acedc7.webp" },
+  { id: "the-train-2025-collection", name: "Коллекция «Train 2025»", section: "Коллекции", coins: 490, image: "/cases/cases/cb4db267a54af245dcf8c3cd2598899c-69f23b8992657.webp" },
+  { id: "the-graphic-design-collection", name: "Коллекция «Графический дизайн»", section: "Коллекции", coins: 750, image: "/cases/cases/32cfea3fab722728fc3fe0da95fa83fa-69f23b628e7a8.webp" },
+  { id: "the-havoc-collection", name: "Коллекция «Хаос»", section: "Коллекции", coins: 1900, image: "/cases/cases/cad8306c48c3cdf490051666f0665515-69f23b6ddf18e.webp" },
+  { id: "the-anubis-collection", name: "Коллекция «Anubis»", section: "Коллекции", coins: 2900, image: "/cases/cases/7d0e9e15031f9436298e737a8ebe042e-69f23a6242b28.webp" },
+  { id: "the-ancient-collection", name: "Коллекция «Ancient»", section: "Коллекции", coins: 3270, image: "/cases/cases/1eb0aa8d2a017c06629ca4ba8a1ed118-69f23a5dde42e.webp" },
+  { id: "the-2021-vertigo-collection", name: "Коллекция Vertigo 2021", section: "Коллекции", coins: 3500, image: "/cases/cases/662c97f90ea79712d3367d33822848bc-69f23a24b9e8c.webp" },
+  { id: "the-control-collection", name: "Коллекция «Control»", section: "Коллекции", coins: 4900, image: "/cases/cases/bc16df3b17a7ed938b39fe079d718e1c-69f23a78db52d.webp" },
+  { id: "the-2021-dust-2-collection", name: "Коллекция «Dust 2 2021»", section: "Коллекции", coins: 6000, image: "/cases/cases/f7c13afc45ef63f7e89950b1acbe47dd-69f23a1c5e7b9.webp" },
+  { id: "the-canals-collection", name: "Коллекция «Canals»", section: "Коллекции", coins: 9000, image: "/cases/cases/e1e7ecaf23e5d5c3b6073eb8820c7a00-69f23a74038ea.webp" },
+  { id: "the-st-marc-collection", name: "Коллекция «St. Marc»", section: "Коллекции", coins: 20000, image: "/cases/cases/d05ad00460569b5693e4229796d4aecf-69f23b8209e4c.webp" }
 ];
+
+const DEFAULT_CASES = buildDefaultCases();
 
 function dbRowToCase(row) {
   try {
@@ -893,7 +1037,8 @@ app.get(['/admin', '/admin.html'], (req, res) => {
 
 const STATIC_DIRS = [
   { url: '/static', dir: path.join(__dirname, 'static') },
-  { url: '/chunks', dir: path.join(__dirname, 'chunks') }
+  { url: '/chunks', dir: path.join(__dirname, 'chunks') },
+  { url: '/cases', dir: path.join(__dirname, 'cases') }
 ];
 for (const { url, dir } of STATIC_DIRS) {
   app.use(url, express.static(dir, {
@@ -1209,16 +1354,28 @@ db.exec(`
 ensureColumn('notifications', 'scheduled_at', 'INTEGER');
 ensureColumn('notifications', 'sent_at', 'INTEGER');
 
+const CASE_CATALOG_VERSION = 'caserone-' + crypto.createHash('sha1').update(JSON.stringify(CASE_CATALOG)).digest('hex').slice(0, 12);
 (function seedCases() {
   try {
+    const seededVersion = settingGetRaw('cases_catalog_version', '');
     const count = db.prepare('SELECT COUNT(*) AS c FROM custom_cases').get().c;
-    if (count === 0) {
+    if (seededVersion !== CASE_CATALOG_VERSION) {
+
+      console.log(`[cases] Catalog version changed (${seededVersion || 'none'} -> ${CASE_CATALOG_VERSION}), reseeding`);
+      db.prepare('DELETE FROM custom_cases').run();
+    }
+    const after = db.prepare('SELECT COUNT(*) AS c FROM custom_cases').get().c;
+    if (after === 0) {
       console.log('[cases] Seeding default cases into DB');
       const now = Date.now();
       const ins = db.prepare('INSERT INTO custom_cases(id,name,description,price_cents,once,enabled,image,max_openings,level_min,starts_at,ends_at,discount_percent,contents,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      let order = 0;
       for (const c of DEFAULT_CASES) {
-        ins.run(c.id, c.name, c.description||'', c.priceCents, c.once?1:0, c.enabled?1:0, c.image||'', c.max_openings||0, c.level_min||0, c.starts_at||null, c.ends_at||null, c.discount_percent||0, JSON.stringify(c.contents||[]), now, now);
+        ins.run(c.id, c.name, c.description||'', c.priceCents, c.once?1:0, c.enabled?1:0, c.image||'', c.max_openings||0, c.level_min||0, c.starts_at||null, c.ends_at||null, c.discount_percent||0, JSON.stringify(c.contents||[]), now + (order++), now);
       }
+      settingSet('cases_catalog_version', CASE_CATALOG_VERSION);
+    } else if (seededVersion !== CASE_CATALOG_VERSION) {
+      settingSet('cases_catalog_version', CASE_CATALOG_VERSION);
     }
     refreshCasesCache();
   } catch (e) {

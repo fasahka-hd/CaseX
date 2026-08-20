@@ -29,6 +29,6 @@ for i, url in enumerate(urls, 1):
         print(f"[{i}/{len(urls)}] скачано: {filename}")
     except Exception as e:
         print(f"[{i}/{len(urls)}] ОШИБКА {filename}: {e}")
-    time.sleep(0.2)  # чтобы не спамить сервер запросами
+    time.sleep(0.2)
 
 print("Готово.")
