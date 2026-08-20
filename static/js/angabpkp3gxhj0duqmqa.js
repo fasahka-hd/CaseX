@@ -554,7 +554,7 @@ async function cxDoSellAll() {
 }
 function inventoryPage() {
   if (!S.me?.authenticated) return loginRequired('ИНВЕНТАРЬ', 'Войдите через Steam, чтобы увидеть предметы, полученные на сайте. Steam-инвентарь сюда не загружается.');
-  if (!S.inventory.length) return `<h1 class="page-title">Инвентарь сайта</h1><p class="sub">Здесь хранятся только предметы из кейсов и апгрейдов сайта.</p>
+  if (!S.inventory.length) return `<h1 class="page-title">Инвентарь сайта</h1><p class="sub">Здесь хранятся только предметы из кейсов и апгрейдов сайта.<lass="sub">Здесь хранятся только предметы из кейсов и апгрейдов сайта.</p>
     <div class="panel empty"><h2>У вас нет предметов</h2><p>Откройте стартовый кейс — выпавший скин появится здесь.</p><button class="cta" onclick="go('cases')">ОТКРЫТЬ КЕЙС</button></div>`;
   return `<h1 class="page-title">Инвентарь сайта</h1><p class="sub">Только предметы, полученные из кейсов и апгрейдов. Инвентарь Steam не используется.</p>
     <div class="panel inventory-panel"><div class="grid inventory-grid">${S.inventory.map(inventoryItemCard).join('')}</div></div>`;
@@ -563,11 +563,46 @@ function inventoryPage() {
 function caseContents(caseData) {
   return caseData.contents.map(item => skinCard(item, { className: 'case-content-item' })).join('');
 }
+let caseDropFor = null;
 function caseIcon(caseData, large = false) {
   if (caseData.image) {
     return `<div class="case-visual case-visual-img ${large ? 'case-visual-large' : ''}"><img src="${esc(caseData.image)}" alt="${esc(caseData.name)}" loading="lazy" draggable="false"></div>`;
   }
   return `<div class="case-visual ${large ? 'case-visual-large' : ''}"><div class="case-cube ${caseData.id === 'starter' ? 'case-cube-starter' : ''}"><i></i><i></i><i></i></div></div>`;
+}
+function playCaseDrop() {
+  const fx = document.getElementById('cx-case-drop-fx');
+  const src = document.querySelector('.case-detail .case-visual img');
+  if (S.page !== 'case' || !S.activeCase) {
+    if (fx) fx.remove();
+    return;
+  }
+  if (fx) {
+    if (src) src.style.visibility = 'hidden';
+    return;
+  }
+  if (caseDropFor === S.activeCase || !src) return;
+  caseDropFor = S.activeCase;
+  const r = src.getBoundingClientRect();
+  if (r.width < 8 || r.height < 8) {
+    caseDropFor = null;
+    requestAnimationFrame(playCaseDrop);
+    return;
+  }
+  src.style.visibility = 'hidden';
+  const ghost = document.createElement('img');
+  ghost.id = 'cx-case-drop-fx';
+  ghost.src = src.currentSrc || src.src;
+  ghost.alt = '';
+  ghost.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`;
+  document.body.appendChild(ghost);
+  void ghost.offsetWidth;
+  ghost.classList.add('cx-case-dropin');
+  ghost.addEventListener('animationend', () => {
+    ghost.remove();
+    const live = document.querySelector('.case-detail .case-visual img');
+    if (live) live.style.visibility = '';
+  }, { once: true });
 }
 
 const CASE_SHOP_SECTIONS = [
@@ -818,14 +853,12 @@ function caseDetailPage() {
         <button type="button" class="insufficient-btn" onclick="openPayment()">Пополнить баланс${plusIcon('2.2rem')}</button>
       </div>`;
   const caseVisual = spinning ? '' : caseIcon(caseData, true);
-  const priceLabel = spinning || S.caseResult ? '' : `<div class="case-detail-price">${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</div>`;
   const buyBlock = S.caseResult ? '' : buyButton;
   const roulette = S.rouletteItems.length ? `<div class="case-roulette"><i class="roulette-pointer"></i><div class="case-roll-track">${S.rouletteItems.map(rouletteCard).join('')}</div></div>` : '';
   const result = S.caseResult && !S.caseReveal ? `<div class="case-result cx-result-clean"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button class="cx-res-up" onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button class="cx-res-inv" onclick="openInventory()">В ИНВЕНТАРЬ</button></div>` : '';
   return `<button class="case-back" onclick="go('cases')">← ВСЕ КЕЙСЫ</button>
     <section class="case-detail ${spinning ? 'cx-case-spinning' : ''}">
       <h1>${esc(caseData.name)}</h1>${caseVisual}
-      ${priceLabel}
       ${buyBlock}
       ${roulette}${result}
       <div class="case-loot"><h2>СОДЕРЖИМОЕ</h2><div class="case-items case-items-detail">${caseContents(caseData)}</div></div>
@@ -1020,7 +1053,7 @@ function profilePage() {
   let content = '';
   if (S.profileTab === 'items') {
     const items = sortList(S.inventory);
-    content = items.length ? `${cxSellAllBar()}${sellBar()}<div class="profile-items-grid">${items.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
+    content = items.length ? `${sellBar()}<div class="profile-items-grid">${items.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
   } else if (S.profileTab === 'history') {
     const history = sortList(profile.history || []);
     content = history.length ? `<div class="profile-items-grid profile-history-grid">${history.map(historyCard).join('')}</div>` : profileEmptyState('История предметов отсутствует', 'Откройте кейс или совершите апгрейд — результаты появятся здесь', 'Открыть кейс', "go('cases')");
@@ -1203,9 +1236,10 @@ function openInventory() {
 }
 let lastPageRendered = null;
 function render() {
+  if (S._dropLock && Date.now() < S._dropLock && S.page === 'case') return;
   const app = $('#app');
   const html = header() + `<div class="layout">${sidebar()}<main class="main">${siteBanner()}<div class="page" data-page="${esc(S.page || '')}">${pageContent()}</div></main></div>${siteFooter()}
-    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}${cookieConsentBanner()}${frozenAccountOverlay()}`;
+    <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}${cookieConsentBanner()}${frozenAccountOverlay()}${cxSellAllBar()}`;
   const pageChanged = S.page !== lastPageRendered;
   lastPageRendered = S.page;
   if (window.morphdom) {
@@ -1224,7 +1258,7 @@ function render() {
   } else {
     app.innerHTML = html;
   }
-  if (pageChanged) {
+  if (pageChanged && S.page !== 'case') {
     const pageEl = app.querySelector('.page');
     if (pageEl) {
       pageEl.classList.remove('page-enter');
@@ -1236,6 +1270,7 @@ function render() {
   ensureImages();
   syncCaseBackdrop();
   syncSidebarToggle();
+  playCaseDrop();
   if (S.chat) loadChat();
 }
 
@@ -1279,12 +1314,19 @@ function syncCaseBackdrop() {
     layer = document.createElement('div');
     layer.id = 'cx-case-backdrop';
     layer.setAttribute('aria-hidden', 'true');
-    layer.innerHTML = '<img class="cx-case-backdrop-video" src="/cases/case-bg-poster2.webp" alt="" draggable="false">';
     document.body.insertBefore(layer, document.body.firstChild);
   }
-  const active = S.page === 'case' || S.page === 'cases';
+  if (!layer.querySelector('video')) {
+    layer.innerHTML = '<video class="cx-case-backdrop-video" src="/cases/cases/case-bg-video.webm" poster="/cases/case-bg-poster2.webp" autoplay muted loop playsinline disablePictureInPicture></video>';
+  }
+  const video = layer.querySelector('video');
+  const active = S.page === 'case';
   layer.classList.toggle('is-active', active);
   document.body.classList.toggle('cx-case-view', active);
+  if (video) {
+    if (active) video.play().catch(() => {});
+    else video.pause();
+  }
 }
 
 let imageFallbackTimer = null;
@@ -1375,7 +1417,8 @@ function setBoost(value, shouldRender = true) {
   S.boost = Number(value);
   S.targetPage = 1;
   const targets = upgradeTargets();
-  S.to = targets[0] || null;
+  const keep = S.to && targets.some(item => String(item.catalogId) === String(S.to.catalogId));
+  if (!keep) S.to = targets[0] || null;
   recalculateChance();
   if (shouldRender) render();
 }
@@ -1458,7 +1501,13 @@ function selectCase(caseId) {
   S.caseResult = null;
   S.rouletteItems = [];
   S.page = 'case';
+  caseDropFor = null;
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
   render();
+  S._dropLock = Date.now() + 1300;
+  window.scrollTo(0, 0);
 }
 function buildRoulette(caseData, winner) {
   const pool = caseData.contents;
@@ -1594,6 +1643,8 @@ async function upgrade() {
     if (wheelEl) {
       wheelEl.style.setProperty('--chance', S.chance + '%');
       wheelEl.style.setProperty('--chance-half', (S.chance / 2).toFixed(3) + '%');
+      wheelEl.style.setProperty('--chance-deg', (S.chance * 3.6).toFixed(3) + 'deg');
+      wheelEl.style.setProperty('--chance-half-deg', (S.chance * 1.8).toFixed(3) + 'deg');
     }
     const headEl = document.querySelector('.wheelhead b');
     if (headEl) headEl.textContent = formatChance(S.chance);

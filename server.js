@@ -2185,6 +2185,33 @@ app.post('/api/inventory/:id/sell', (req, res) => {
     res.status(400).json({ error: error.message || 'Не удалось продать предмет' });
   }
 });
+app.post('/api/cx-sell-all', (req, res) => {
+  const account = currentUser(req);
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  try {
+    const result = db.transaction(() => {
+      const items = db.prepare("SELECT * FROM site_inventory WHERE user_id = ? AND status = 'active'").all(account.id);
+      if (!items.length) throw new Error('Инвентарь пуст');
+      const now = Date.now();
+      let total = 0;
+      const sellOne = db.prepare("UPDATE site_inventory SET status = 'sold', updated_at = ? WHERE id = ? AND status = 'active'");
+      const addSale = db.prepare('INSERT INTO inventory_sales(user_id,inventory_item_id,amount_cents,created_at) VALUES(?,?,?,?)');
+      for (const item of items) {
+        const changed = sellOne.run(now, item.id);
+        if (!changed.changes) continue;
+        total += Number(item.price_cents || 0);
+        addSale.run(account.id, item.id, item.price_cents, now);
+      }
+      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?').run(total, now, account.id);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      recordTransaction(account.id, 'item_sale', total, balance, 'sell_all', now);
+      return { count: items.length, totalCents: total, balanceCents: balance };
+    })();
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Не удалось продать предметы' });
+  }
+});
 app.get('/api/cases', (req, res) => {
   const account = currentUser(req);
   res.json({ authenticated: !!account, cases: CASES.map(item => caseView(item, account?.id)) });
