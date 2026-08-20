@@ -286,9 +286,12 @@ steamSkinMap().then(map => { STEAM_SKIN_MAP = map; }).catch(() => {});
 
 function withSteamIcon(item) {
   if (!item || typeof item !== 'object') return item;
-  const local = item.localIcon || item.icon || '';
-  const steam = item.icon && String(item.icon).startsWith('http') ? item.icon : steamIconFor(item.name || item.itemName);
-  return { ...item, localIcon: local, icon: steam || local };
+  const rawIcon = item.icon || '';
+  const isHttp = String(rawIcon).startsWith('http');
+  const localFallback = item.localIcon || (isHttp ? '' : rawIcon) || '';
+  const nameKey = item.name || item.itemName || '';
+  const steam = isHttp ? rawIcon : steamIconFor(nameKey);
+  return { ...item, localIcon: localFallback, icon: steam || localFallback };
 }
 
 function slugId(name) {
@@ -1786,6 +1789,7 @@ queue.on('audit.write', payload => {
   db.prepare('INSERT INTO admin_logs(admin_id,admin_name,action,target,details,created_at) VALUES(?,?,?,?,?,?)')
     .run(payload.adminId, payload.adminName, payload.action, payload.target, payload.details, payload.createdAt || Date.now());
 });
+require('./routes/7vljdnqqbrjyhj330sxtjo.js')({app:app,db:db,CATALOG:CATALOG,currentUser:currentUser,withSteamIcon:withSteamIcon,insertInventoryItem:insertInventoryItem,addLiveDrop:addLiveDrop,recordTransaction:recordTransaction});
 app.get('/api/config', (_, res) => {
   let banner = null;
   try { banner = JSON.parse(settingGetRaw('site_banner', 'null')); } catch {}
@@ -1925,7 +1929,9 @@ app.get('/api/profile', (req, res) => {
   res.json({
     user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar, role: roleOf(account) },
     balanceCents: account.balance_cents,
-    withdrawnCents: sold.total,
+    withdrawnCents: 0,
+    soldCents: sold.total,
+    soldItemsCount: sold.count,
     activeItems,
     bestDrop: bestDrop ? { ...withSteamIcon(bestDrop), assetid: String(bestDrop.assetid) } : null,
     history: historyRows,
@@ -2060,7 +2066,8 @@ app.post('/api/cases/open', (req, res) => {
       }
       const drop = addLiveDrop(account.id, account.name, won, 'case', now);
       const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
-      return { won: { ...won, assetid: String(inventoryId) }, drop, balanceCents: balance };
+      const wonPublic = withSteamIcon({ ...won, assetid: String(inventoryId) });
+      return { won: wonPublic, drop, balanceCents: balance };
     })();
     queue.publish('drop.broadcast', result.drop);
     queue.publish('stats.refresh', {});
@@ -2138,7 +2145,7 @@ app.post('/api/upgrade', async (req, res) => {
         boostPercent,
         addBalanceCents,
         roll: Math.floor(roll * 100) / 100,
-        item: won ? { ...target, assetid: String(resultItemId) } : null,
+        item: won ? withSteamIcon({ ...target, assetid: String(resultItemId) }) : null,
         drop
       };
     })();

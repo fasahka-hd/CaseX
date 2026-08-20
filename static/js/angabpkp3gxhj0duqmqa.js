@@ -7,7 +7,8 @@ const S = {
   authModal: false, ageAccepted: false, termsAccepted: false,
   profile: null, publicProfile: null, publicProfileLoading: false, publicProfileError: '', profileTab: 'items', settingsOpen: false, settings: null,
   paymentOpen: false, paymentTab: 'card', paymentAmount: 500, paymentMethod: 0, paymentCurrency: 'RUB', currencyOpen: false,
-  sellMode: false, sellSelected: new Set(), sortBy: 'new', sortOpen: false,
+  sellMode: false, sellSelected: new Set(), sortBy: 'new', sortOpen: false, sellAllConfirm: false,
+  cxWeekly: null,
   targetSearch: '', targetMin: '', targetMax: '', targetPage: 1,
   footerLang: PATH_LANGUAGE, footerLangOpen: false,
   globalStats: { totalPlayers: 0, casesOpened: 0, upgradesMade: 0 },
@@ -186,10 +187,11 @@ async function boot() {
     S.turbo = localStorage.getItem('keyser-turbo') === '1';
     S.cookieConsent = localStorage.getItem('keyser-cookie-consent');
     if (me.authenticated) {
-      const [inventory, profile] = await Promise.all([api('/api/inventory'), api('/api/profile')]);
+      const [inventory, profile, weekly] = await Promise.all([api('/api/inventory'), api('/api/profile'), api('/api/cx-weekly').catch(()=>null)]);
       S.inventory = inventory.items || [];
       S.inventoryFeed = inventory.feed || inventory.items || [];
       S.profile = profile;
+      S.cxWeekly = weekly;
     }
     const profileMatch=location.pathname.match(/^\/profile\/(\d+)\/?$/);
     if(profileMatch) await openPublicProfile(profileMatch[1],false); else render();
@@ -230,6 +232,10 @@ function listen() {
     const drop = JSON.parse(event.data);
     if (!S.drops.some(item => item.id === drop.id)) S.drops.unshift(drop);
     S.drops = S.drops.slice(0, 30);
+    if (drop.source === 'reward' && S.me?.authenticated) {
+      api('/api/cx-weekly').then(w=>{S.cxWeekly=w;render();}).catch(()=>{});
+      refreshAccount();
+    }
     if (S.page === 'rewards' || S.page === 'upgrade') render();
   });
   events.addEventListener('notify', event => {
@@ -518,6 +524,34 @@ async function sellSelectedItems() {
   render();
   toast(sold ? `Продано: ${sold} шт. на ${money(amount)}` : 'Не удалось продать', sold ? '' : 'error');
 }
+function cxSellAllBar() {
+  if (!S.sellAllConfirm) return '';
+  const total = S.inventory.reduce((s, it) => s + Number(it.priceCents || 0), 0);
+  const cnt = S.inventory.length;
+  return `<div class="cx-sell-all-confirm">
+    <span>Продать все предметы (<b>${cnt}</b> шт.) и получить <b>${coinPrice(total)}</b>?</span>
+    <button class="cx-sa-cancel" onclick="cxCancelSellAll()">ОТМЕНА</button>
+    <button class="cx-sa-ok" onclick="cxDoSellAll()">ПОДТВЕРДИТЬ</button>
+  </div>`;
+}
+function cxAskSellAll() {
+  if (!S.inventory.length) return toast('Инвентарь пуст');
+  S.sellAllConfirm = true;
+  S.sellMode = false;
+  S.sellSelected.clear();
+  render();
+}
+function cxCancelSellAll() { S.sellAllConfirm = false; render(); }
+async function cxDoSellAll() {
+  try {
+    const r = await api('/api/cx-sell-all', { method: 'POST' });
+    S.sellAllConfirm = false;
+    await refreshAccount();
+    S.from = null; S.to = null; S.chance = null;
+    render();
+    toast(`Продано ${r.count} шт. на ${money(r.totalCents)}`);
+  } catch (e) { toast(e.message || 'Ошибка', 'error'); }
+}
 function inventoryPage() {
   if (!S.me?.authenticated) return loginRequired('ИНВЕНТАРЬ', 'Войдите через Steam, чтобы увидеть предметы, полученные на сайте. Steam-инвентарь сюда не загружается.');
   if (!S.inventory.length) return `<h1 class="page-title">Инвентарь сайта</h1><p class="sub">Здесь хранятся только предметы из кейсов и апгрейдов сайта.</p>
@@ -534,8 +568,7 @@ function caseIcon(caseData, large = false) {
 }
 function casesPage() {
   if (!S.me?.authenticated) return loginRequired('КЕЙСЫ', 'Войдите в аккаунт. Выпавшие скины будут сохранены в инвентаре сайта, а не в Steam.');
-  return `<h1 class="page-title">Кейсы</h1><p class="sub">Выберите кейс. Содержимое и анимация открытия находятся на его странице.</p>
-    <div class="case-shop-grid">${S.cases.map(caseData => `<article class="case-shop-card ${caseData.id === 'starter' ? 'starter-case' : ''}">
+  return `<div class="case-shop-grid">${S.cases.map(caseData => `<article class="case-shop-card ${caseData.id === 'starter' ? 'starter-case' : ''}">
       ${caseIcon(caseData)}<h2>${esc(caseData.name)}</h2><b>${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</b>
       <button onclick="selectCase('${esc(caseData.id)}')" ${!caseData.available ? 'disabled' : ''}>${caseData.available ? 'КУПИТЬ' : 'УЖЕ ОТКРЫТ'}</button>
     </article>`).join('')}</div>`;
@@ -547,6 +580,7 @@ function caseDetailPage() {
   if (!S.me?.authenticated) return loginRequired('КЕЙС', 'Войдите через Steam, чтобы открыть кейс.');
   const caseData = S.cases.find(item => item.id === S.activeCase) || S.cases[0];
   if (!caseData) return '<div class="empty"><h2>Кейс не найден</h2></div>';
+  const spinning = S.opening === caseData.id;
   const insufficient = caseData.priceCents > Number(S.me.user.balanceCents);
   const disabled = !!S.opening || !caseData.available || insufficient;
   const missingCents = caseData.priceCents - Number(S.me.user.balanceCents);
@@ -557,20 +591,40 @@ function caseDetailPage() {
         <span class="insufficient-text">Недостаточно средств для открытия кейса</span>
         <button type="button" class="insufficient-btn" onclick="openPayment()">Пополнить баланс${plusIcon('2.2rem')}</button>
       </div>`;
+  const caseVisual = spinning ? '' : caseIcon(caseData, true);
+  const priceLabel = spinning || S.caseResult ? '' : `<div class="case-detail-price">${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</div>`;
+  const buyBlock = S.caseResult ? '' : buyButton;
   const roulette = S.rouletteItems.length ? `<div class="case-roulette"><i class="roulette-pointer"></i><div class="case-roll-track">${S.rouletteItems.map(rouletteCard).join('')}</div></div>` : '';
-  const result = S.caseResult && !S.caseReveal ? `<div class="case-result"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button onclick="openInventory()">В ИНВЕНТАРЬ</button></div>` : '';
+  const result = S.caseResult && !S.caseReveal ? `<div class="case-result cx-result-clean"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button class="cx-res-up" onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button class="cx-res-inv" onclick="openInventory()">В ИНВЕНТАРЬ</button></div>` : '';
   return `<button class="case-back" onclick="go('cases')">← ВСЕ КЕЙСЫ</button>
-    <section class="case-detail">
-      <h1>${esc(caseData.name)}</h1>${caseIcon(caseData, true)}
-      <div class="case-detail-price">${caseData.priceCents ? coinPrice(caseData.priceCents) : 'БЕСПЛАТНО'}</div>
-      ${buyButton}
+    <section class="case-detail ${spinning ? 'cx-case-spinning' : ''}">
+      <h1>${esc(caseData.name)}</h1>${caseVisual}
+      ${priceLabel}
+      ${buyBlock}
       ${roulette}${result}
       <div class="case-loot"><h2>СОДЕРЖИМОЕ</h2><div class="case-items case-items-detail">${caseContents(caseData)}</div></div>
     </section>`;
 }
 
+function cxWeeklySlot(item, claimed, locked, canPick) {
+  if (locked) {
+    return `<div class="weekly-slot cx-weekly-slot cx-locked"><div class="cx-slot-lock"><img src="/chunks/question.svg" alt="" style="width:56px;height:94px;object-fit:contain;opacity:.45"></div></div>`;
+  }
+  const price = `<span class="skin-price">${coinPrice(item.priceCents)}</span>`;
+  const artEl = art(item);
+  const claimBtn = (!claimed && canPick) ? `<button class="cx-slot-pick" onclick="cxClaimWeekly('${esc(item.catalogId)}')">ЗАБРАТЬ</button>` : '';
+  const claimBadge = claimed ? `<span class="cx-slot-claimed">ЗАБРАНО</span>` : '';
+  const wearTag = item.wear ? `<span class="skin-wear">${esc(item.wear)}</span>` : '';
+  return `<div class="weekly-slot cx-weekly-slot cx-skin-slot ${claimed?'cx-claimed':''}" ${rarityStyle(item)}>
+    ${price}${wearTag}${artEl}
+    <strong>${esc(item.weapon||item.name)}</strong>
+    <small>${esc(item.skin||'')}</small>
+    <span class="rarity-name">${esc(item.rarity||'')}</span>${rarityLine()}
+    ${claimBadge}${claimBtn}
+  </div>`;
+}
 function weeklySlot() {
-  return `<div class="weekly-slot" aria-hidden="true"><img src="/chunks/question.svg" alt=""></div>`;
+  return cxWeeklySlot(null, false, true, false);
 }
 function topDropCard(drop) {
   const item = { name: drop.itemName, weapon: String(drop.itemName).split(' | ')[0], skin: String(drop.itemName).split(' | ')[1] || '', icon: drop.itemIcon, localIcon: drop.localIcon || '', priceCents: drop.priceCents, rarity: drop.rarity, rarityColor: drop.rarityColor };
@@ -578,19 +632,45 @@ function topDropCard(drop) {
 }
 function rewardsPage() {
   const rewardDrops = S.drops.filter(drop => drop.source === 'reward');
+  const w = S.cxWeekly;
+  const authed = !!(S.me && S.me.authenticated);
+  let slotsHtml = '';
+  let copyHtml = '';
+  if (!authed) {
+    slotsHtml = [0,1,2,3].map(()=>cxWeeklySlot(null,false,true,false)).join('');
+    copyHtml = `<h2>ЕЖЕНЕДЕЛЬНЫЙ НАБОР</h2>
+      <div class="weekly-ribbon"><span>НУЖНА АВТОРИЗАЦИЯ</span></div>
+      <p>Войдите через Steam и пополните баланс, чтобы разблокировать набор.<br>Вы сможете забрать несколько скинов из представленных. Обновление раз в 7 дней.</p>
+      <button class="weekly-button" onclick="login()">АВТОРИЗОВАТЬСЯ</button>`;
+  } else if (!w) {
+    slotsHtml = [0,1,2,3].map(()=>cxWeeklySlot(null,false,true,false)).join('');
+    copyHtml = `<h2>ЕЖЕНЕДЕЛЬНЫЙ НАБОР</h2>
+      <div class="weekly-ribbon"><span>ЗАГРУЗКА</span></div><p>Загружаем награды...</p>`;
+  } else if (!w.unlocked) {
+    slotsHtml = [0,1,2,3].map(()=>cxWeeklySlot(null,false,true,false)).join('');
+    const pct = w.thresh>0 ? Math.min(100, Math.round((w.total / w.thresh) * 100)) : 0;
+    copyHtml = `<h2>ЕЖЕНЕДЕЛЬНЫЙ НАБОР</h2>
+      <div class="weekly-ribbon"><span>РАЗБЛОКИРУЙ НАГРАДЫ</span></div>
+      <p>Пополни баланс, чтобы открыть доступ к набору с несколькими скинами.<br>Ты сможешь забрать часть из них. Обновление раз в 7 дней.</p>
+      <div class="cx-weekly-progress"><div class="cx-weekly-progress-bar" style="width:${pct}%"></div><span>Прогресс: ${pct}%</span></div>
+      <button class="weekly-button" onclick="openPayment()">ПОПОЛНИТЬ БАЛАНС</button>`;
+  } else {
+    slotsHtml = (w.pool||[]).map(it => cxWeeklySlot(it, (w.claimed||[]).indexOf(it.catalogId)!==-1, false, (w.left||0)>0)).join('');
+    const rem = Math.max(0, (w.expires||0) - Date.now());
+    const days = Math.floor(rem/86400000);
+    const hrs = Math.floor((rem%86400000)/3600000);
+    copyHtml = `<h2>ЕЖЕНЕДЕЛЬНЫЙ НАБОР</h2>
+      <div class="weekly-ribbon cx-ribbon-open"><span>НАГРАДЫ ОТКРЫТЫ</span></div>
+      <p>Выбери понравившиеся скины и забери их в инвентарь.<br>Обновление через: <b>${days} дн. ${hrs} ч.</b></p>
+      <p class="cx-pick-info">Осталось забрать: <b>${w.left||0}</b></p>
+      ${(w.left||0)>0 ? '<button class="weekly-button" onclick="go(\'cases\')">ПРОДОЛЖИТЬ ИГРУ</button>' : '<button class="weekly-button cx-btn-disabled" disabled>ВСЕ СКИНЫ ЗАБРАНЫ</button>'}`;
+  }
   return `<h1 class="weekly-page-title">НАГРАДЫ</h1>
     <section class="weekly-panel">
       <img class="weekly-bg" src="/chunks/bg.webp" alt="" aria-hidden="true">
       <div class="weekly-content">
-        <div class="weekly-slots">${weeklySlot().repeat(4)}</div>
-        <div class="weekly-copy">
-          <h2>ЕЖЕНЕДЕЛЬНЫЙ НАБОР</h2>
-          <div class="weekly-ribbon"><span>РАЗБЛОКИРУЙ НАГРАДЫ</span></div>
-          <p>Пополняй баланс и играй на сайте, чтобы разблокировать награды.<br>Еженедельный дроп обновляется каждые 7 дней.</p>
-          ${S.me?.authenticated
-            ? '<button class="weekly-button" onclick="go(\'cases\')">ОТКРЫТЬ КЕЙСЫ</button>'
-            : '<button class="weekly-button" onclick="login()">АВТОРИЗОВАТЬСЯ</button>'}
-        </div>
+        <div class="weekly-slots">${slotsHtml}</div>
+        <div class="weekly-copy">${copyHtml}</div>
       </div>
     </section>
     <section class="top-drops-panel">
@@ -598,10 +678,21 @@ function rewardsPage() {
       <div class="top-drops-track">${rewardDrops.length ? rewardDrops.slice(0, 12).map(topDropCard).join('') : '<div class="top-drops-empty">Здесь появятся только предметы из еженедельных наград</div>'}</div>
     </section>`;
 }
+async function cxClaimWeekly(catalogId) {
+  if (!S.cxWeekly || !(S.cxWeekly.left>0)) return toast('Вы уже забрали все доступные скины');
+  if (!confirm('Забрать этот скин? Осталось забрать: ' + (S.cxWeekly.left||0))) return;
+  try {
+    const r = await api('/api/cx-weekly/claim/' + encodeURIComponent(catalogId), { method: 'POST' });
+    S.cxWeekly = Object.assign({}, S.cxWeekly, { claimed: r.claimed, left: r.left, pool: (S.cxWeekly.pool||[]).map(it=>it.catalogId===catalogId?Object.assign({},it,{claimed:true}):it) });
+    S.me.user.balanceCents = r.balanceCents;
+    await refreshAccount();
+    render();
+    toast('Скин добавлен в инвентарь');
+  } catch (e) { toast(e.message || 'Не удалось забрать скин', 'error'); }
+}
 
 function stealPage() {
-  return `<h1 class="page-title">STEAL A SKIN</h1><p class="sub">События создаются только после реального дропа на сайте.</p>
-    <div class="steal"><div class="stealhero"><h2>STEAL A SKIN</h2><div class="empty"><h2>Нет активного события</h2><p>Когда появится дорогой дроп, здесь будет окно STEAL.</p></div></div>
+  return `<div class="steal"><div class="stealhero"><h2>STEAL A SKIN</h2><div class="empty"><h2>Нет активного события</h2><p>Когда появится дорогой дроп, здесь будет окно STEAL.</p></div></div>
     <div class="stealside"><h3>Правила</h3><div class="rule"><b>15 секунд</b>Время на STEAL.</div><div class="rule"><b>3–5%</b>Комиссия задаётся сервером.</div><div class="rule"><b>PvP</b>Победитель определяется сервером.</div></div></div>`;
 }
 
@@ -702,7 +793,7 @@ function profilePage() {
   let content = '';
   if (S.profileTab === 'items') {
     const items = sortList(S.inventory);
-    content = items.length ? `${sellBar()}<div class="profile-items-grid">${items.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
+    content = items.length ? `${cxSellAllBar()}${sellBar()}<div class="profile-items-grid">${items.map(inventoryItemCard).join('')}</div>` : '<div class="profile-empty">У ВАС НЕТ ПРЕДМЕТОВ</div>';
   } else if (S.profileTab === 'history') {
     const history = sortList(profile.history || []);
     content = history.length ? `<div class="profile-items-grid profile-history-grid">${history.map(historyCard).join('')}</div>` : profileEmptyState('История предметов отсутствует', 'Откройте кейс или совершите апгрейд — результаты появятся здесь', 'Открыть кейс', "go('cases')");
@@ -712,7 +803,7 @@ function profilePage() {
   }
   const sellBtn = S.sellMode
     ? '<button class="profile-sell-all sell-cancel" onclick="toggleSellMode()">ОТМЕНА</button>'
-    : '<button class="profile-sell-all" onclick="toggleSellMode()">ПРОДАТЬ ВСЕ</button>';
+    : '<button class="profile-sell-all" onclick="cxAskSellAll()">ПРОДАТЬ ВСЕ</button>';
   return `<section class="profile-page">
     <div class="profile-summary-grid">
       <article class="profile-user-card">
@@ -721,7 +812,7 @@ function profilePage() {
         <div class="profile-mini-stats"><div><b>${profile.stats?.casesOpened || 0}</b><span>Кейсы</span></div><div><b>${profile.stats?.upgradesMade || 0}</b><span>Апгрейды</span></div><div><b>${profile.stats?.soldItems || 0}</b><span>Продажи</span></div></div>
       </article>
       <article class="profile-best-card"><h2>Лучший дроп</h2>${best}</article>
-      <div class="profile-side-column"><article class="profile-withdraw"><span class="withdrawn-label">Выведено</span><div class="withdrawn-amount"><b>${(Number(profile.withdrawnCents || 0) / 100).toFixed(2)}</b><img src="/chunks/coin.svg" alt="₽"></div><span class="withdrawn-count">${profile.activeItems || 0} предмета</span><img class="withdrawn-bg" src="/chunks/steamBg.webp" alt="" aria-hidden="true"></article><article class="profile-coupon"><input placeholder="Персональный купон"><button>ПРИМЕНИТЬ</button></article></div>
+      <div class="profile-side-column"><article class="profile-withdraw"><span class="withdrawn-label">Выведено</span><div class="withdrawn-amount"><b>${(Number(profile.withdrawnCents || 0) / 100).toFixed(2)}</b><img src="/chunks/coin.svg" alt="₽"></div><span class="withdrawn-count">0 предметов</span><img class="withdrawn-bg" src="/chunks/steamBg.webp" alt="" aria-hidden="true"></article><article class="profile-coupon"><input placeholder="Персональный купон"><button>ПРИМЕНИТЬ</button></article></div>
     </div>
     <div class="profile-toolbar"><div class="profile-tabs"><button class="${S.profileTab === 'items' ? 'active' : ''}" onclick="setProfileTab('items')">ПРЕДМЕТЫ</button><button class="${S.profileTab === 'history' ? 'active' : ''}" onclick="setProfileTab('history')">ИСТОРИЯ</button><button class="${S.profileTab === 'upgrades' ? 'active' : ''}" onclick="setProfileTab('upgrades')">АПГРЕЙДЫ</button></div><div class="profile-toolbar-right">${profileSortButton()}${sellBtn}</div></div>
     <div class="profile-content">${content}</div>
@@ -1107,6 +1198,8 @@ async function openCase(caseId) {
   S.caseResult = null;
   S.rouletteItems = [];
   render();
+  const detail = document.querySelector('.case-detail');
+  if (detail) detail.classList.add('cx-case-spinning');
   try {
     const result = await api('/api/cases/open', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId })
@@ -1121,7 +1214,7 @@ async function openCase(caseId) {
         track.style.transform = `translate3d(-${Math.max(0, stop)}px,0,0)`;
         track.classList.add('rolling');
       }
-      setTimeout(resolve, 4400);
+      setTimeout(resolve, 6400);
     })));
     await refreshAccount();
     S.rouletteItems = [];
@@ -1131,6 +1224,7 @@ async function openCase(caseId) {
     S.rouletteItems = [];
     toast(error.message, 'error');
   } finally {
+    if (detail) detail.classList.remove('cx-case-spinning');
     S.opening = null;
     render();
     if (S.caseReveal) {
@@ -1554,11 +1648,21 @@ function applyPaymentPromo() {
   const code = document.querySelector('#payment-promo')?.value?.trim() || '';
   toast(code ? 'Промокод будет проверен платёжным провайдером' : 'Введите промокод');
 }
-function submitPayment() {
+async function submitPayment() {
   const amount = Number(document.querySelector('#payment-amount')?.value || S.paymentAmount);
   const symbol = CURRENCY_BY_CODE[S.paymentCurrency]?.symbol || '₽';
   if (!Number.isFinite(amount) || amount < 50) return toast(`Минимальная сумма пополнения — 50 ${symbol}`);
-  toast('Платёжный провайдер пока не подключён');
+  const amountCents = Math.round(amount * 100);
+  try {
+    const r = await api('/api/cx-deposit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amountCents }) });
+    S.paymentOpen = false;
+    S.me.user.balanceCents = r.balanceCents;
+    if (S.me?.authenticated) {
+      try { S.cxWeekly = await api('/api/cx-weekly'); } catch(_e){}
+    }
+    render();
+    toast('Баланс пополнен на ' + money(r.amountCents));
+  } catch (e) { toast(e.message || 'Ошибка пополнения', 'error'); }
 }
 async function openChat() {
   try {
@@ -1589,13 +1693,25 @@ async function submitSupportEmail() {
 function closeChat() { S.chat = false; render(); }
 function setTicketCategory(value){S.ticketCategory=value;}
 function toast(text, type = '') {
-  const root = $('#toast-root');
-  root.innerHTML = `<div class="toast ${type}">${esc(text)}</div>`;
-  setTimeout(() => { root.innerHTML = ''; }, 3200);
+  let root = $('#toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'toast-root';
+    root.setAttribute('aria-live','polite');
+    document.body.appendChild(root);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || '');
+  t.innerHTML = `<span class="cx-toast-text">${esc(text)}</span><span class="cx-toast-close"><span class="cx-sep"></span><button type="button" aria-label="Закрыть">×</button></span>`;
+  root.appendChild(t);
+  const closeBtn = t.querySelector('.cx-toast-close button');
+  const remove = () => { if (t.parentNode) t.parentNode.removeChild(t); };
+  if (closeBtn) closeBtn.addEventListener('click', remove);
+  setTimeout(remove, 3200);
 }
 
 Object.assign(window, {
-  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
+  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, cxAskSellAll, cxCancelSellAll, cxDoSellAll, cxClaimWeekly, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
   login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
