@@ -587,7 +587,7 @@ function caseDetailPage() {
   const buyButton = !insufficient
     ? `<button class="case-buy-button" ${disabled ? 'disabled' : ''} onclick="openCase('${esc(caseData.id)}')">${S.opening ? 'ОТКРЫВАЕМ...' : !caseData.available ? 'УЖЕ ОТКРЫТ' : caseData.priceCents ? `КУПИТЬ ЗА ${coinPrice(caseData.priceCents)}` : 'КУПИТЬ БЕСПЛАТНО'}</button>`
     : `<div class="insufficient-box">
-        <div class="insufficient-head"><span>Не хватает</span><b>${money(missingCents)}</b>${coinIcon('2rem')}</div>
+        <div class="insufficient-head"><span>Не хватает</span><b>${money(missingCents)}</b><img class="insufficient-coin" src="/chunks/coin.svg" alt="" aria-hidden="true"></div>
         <span class="insufficient-text">Недостаточно средств для открытия кейса</span>
         <button type="button" class="insufficient-btn" onclick="openPayment()">Пополнить баланс${plusIcon('2.2rem')}</button>
       </div>`;
@@ -1008,7 +1008,66 @@ function render() {
   }
   translateDom(app);
   ensureImages();
+  syncCaseBackdrop();
+  syncSidebarToggle();
   if (S.chat) loadChat();
+}
+
+const SIDEBAR_KEY = 'keyser-sidebar-collapsed';
+
+function sidebarChevron() {
+  return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5 8 12l7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle('cx-side-collapsed', collapsed);
+  try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (error) {  }
+  const button = document.getElementById('cx-side-toggle');
+  if (button) {
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('aria-label', collapsed ? 'Показать панель дропов' : 'Скрыть панель дропов');
+    button.title = collapsed ? 'Показать панель' : 'Скрыть панель';
+  }
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!document.body.classList.contains('cx-side-collapsed'));
+}
+
+function syncSidebarToggle() {
+  if (document.getElementById('cx-side-toggle')) return;
+  const button = document.createElement('button');
+  button.id = 'cx-side-toggle';
+  button.type = 'button';
+  button.innerHTML = sidebarChevron();
+  button.addEventListener('click', toggleSidebar);
+  document.body.appendChild(button);
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(SIDEBAR_KEY) === '1'; } catch (error) {  }
+  setSidebarCollapsed(collapsed);
+}
+
+function syncCaseBackdrop() {
+  let layer = document.getElementById('cx-case-backdrop');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = 'cx-case-backdrop';
+    layer.setAttribute('aria-hidden', 'true');
+    layer.innerHTML = '<video class="cx-case-backdrop-video" src="/chunks/caseBG.webm" poster="/chunks/caseBG.webp" autoplay loop muted playsinline preload="none"></video>';
+    document.body.insertBefore(layer, document.body.firstChild);
+  }
+  const active = S.page === 'case';
+  layer.classList.toggle('is-active', active);
+  document.body.classList.toggle('cx-case-view', active);
+  const video = layer.firstElementChild;
+  if (!video) return;
+  if (active) {
+    if (video.preload !== 'auto') video.preload = 'auto';
+    const playback = video.play();
+    if (playback && playback.catch) playback.catch(() => {});
+  } else if (!video.paused) {
+    video.pause();
+  }
 }
 
 let imageFallbackTimer = null;
@@ -1751,7 +1810,7 @@ Object.assign(window, {
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat, setTicketCategory,
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
-  closeUpgradeResult, closeCaseReveal, openInventory, openPublicProfile, acceptCookies, rejectCookies
+  closeUpgradeResult, closeCaseReveal, openInventory, openPublicProfile, acceptCookies, rejectCookies, toggleSidebar
 });
 function notificationSeenIds() {
   try {
