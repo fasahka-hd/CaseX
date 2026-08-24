@@ -12,7 +12,9 @@
     "migrate:sqlite-to-pg": "node scripts/migrate-to-postgres.js",
     "infra:up": "node scripts/infra.js up",
     "infra:down": "node scripts/infra.js down",
-    "infra:status": "node scripts/infra.js status"
+    "infra:status": "node scripts/infra.js status",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check server.js && node --check lib/idempotency.js && node --check routes/7vljdnqqbrjyhj330sxtjo.js && node --check static/js/core.js && node --check static/js/dialog.js && node --check static/js/app.js && node --check static/js/admin.js"
   },
   "engines": {
     "node": ">=18"

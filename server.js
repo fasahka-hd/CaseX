@@ -9,7 +9,7 @@ const fs = require('fs');
 
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'BASE_URL', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'DB_PATH', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW']);
+  const allowed = new Set(['STEAM_API_KEY', 'SESSION_SECRET', 'BRAND_NAME', 'TELEGRAM_URL', 'PORT', 'BASE_URL', 'APP_BASE_PATH', 'ADMIN_STEAMIDS', 'SUPPORT_STEAMIDS', 'DB_DRIVER', 'DB_PATH', 'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'REDIS_ENABLED', 'REDIS_URL', 'RATE_LIMIT', 'RATE_WINDOW', 'PAYMENTS_MODE']);
   for (const line of localEnv.split(/\r?\n/)) {
     const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
     if (!match || !allowed.has(match[1]) || process.env[match[1]]) continue;
@@ -18,16 +18,53 @@ try {
 } catch {}
 
 const app = express();
+app.disable('x-powered-by');
 app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 function normalizeBaseUrl(value, port) {
   const raw = String(value || '').trim().replace(/\/+$/, '');
   if (!raw) return `http://localhost:${port}`;
-
   if (!/^https?:\/\//i.test(raw)) return `http://${raw}`;
   return raw;
 }
+function normalizeBasePath(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '/') return '';
+  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
+}
 const BASE_URL = normalizeBaseUrl(process.env.BASE_URL, PORT);
+const inferredBasePath = (() => {
+  try { return new URL(BASE_URL).pathname; } catch { return ''; }
+})();
+const APP_BASE_PATH = normalizeBasePath(process.env.APP_BASE_PATH || inferredBasePath);
+const PAYMENTS_MODE = String(process.env.PAYMENTS_MODE || (process.env.NODE_ENV === 'production' ? 'disabled' : 'simulation')).toLowerCase();
+function appPath(value = '/') {
+  const pathname = `/${String(value || '').replace(/^\/+/, '')}`;
+  return `${APP_BASE_PATH}${pathname}` || '/';
+}
+app.use((req, res, next) => {
+  if (!APP_BASE_PATH) return next();
+  if (req.url === APP_BASE_PATH) {
+    req.url = '/';
+    return next();
+  }
+  if (req.url.startsWith(`${APP_BASE_PATH}/`)) {
+    req.url = req.url.slice(APP_BASE_PATH.length) || '/';
+    return next();
+  }
+  res.status(404).send('Not found');
+});
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (BASE_URL.startsWith('https://') || req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: https://*.steamstatic.com https://steamcdn-a.akamaihd.net; media-src 'self'; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self' https://steamcommunity.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+  next();
+});
+if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) throw new Error('SESSION_SECRET is required in production');
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const BRAND_NAME = process.env.BRAND_NAME || 'КЕЙСЕР';
 const TELEGRAM_URL = process.env.TELEGRAM_URL || 'https://t.me/';
@@ -1062,11 +1099,17 @@ app.use((req, res, next) => {
   }
   next();
 });
+function sendHtmlDocument(res, filename) {
+  const baseHref = `${APP_BASE_PATH || ''}/`;
+  const html = fs.readFileSync(path.join(__dirname, filename), 'utf8').replaceAll('__CASEX_BASE__', baseHref);
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('html').send(html);
+}
 app.get('/favicon.ico', (_, res) => res.type('svg').sendFile(path.join(__dirname, 'favicon.svg')));
 app.get(['/admin', '/admin.html'], (req, res) => {
   const account = currentUser(req);
-  if (!account || !isStaff(account)) return res.status(404).sendFile(path.join(__dirname, 'index.html'));
-  res.sendFile(path.join(__dirname, 'admin.html'));
+  if (!account || !isStaff(account)) return sendHtmlDocument(res.status(404), 'index.html');
+  sendHtmlDocument(res, 'admin.html');
 });
 
 const STATIC_DIRS = [
@@ -1081,20 +1124,15 @@ for (const { url, dir } of STATIC_DIRS) {
     fallthrough: true
   }));
 }
-const STATIC_ROOT_FILES = new Set([
-  '/favicon.svg',
-  '/index.html',
-  '/tos.html',
-  '/privacy.html',
-  '/cookies.html',
-  '/aml.html',
-  '/robots.txt'
-]);
+const STATIC_ROOT_FILES = new Set(['/favicon.svg', '/robots.txt']);
 app.get([...STATIC_ROOT_FILES], (req, res) => {
   res.sendFile(path.join(__dirname, req.path));
 });
-
-app.get('/', (_, res) => res.sendFile(path.join(__dirname, 'index.html')));
+for (const filename of ['tos.html', 'privacy.html', 'cookies.html', 'aml.html']) {
+  app.get(`/${filename}`, (_, res) => sendHtmlDocument(res, filename));
+}
+app.get('/index.html', (_, res) => sendHtmlDocument(res, 'index.html'));
+app.get('/', (_, res) => sendHtmlDocument(res, 'index.html'));
 
 const db = require('./lib/db');
 const cache = require('./lib/cache');
@@ -1145,7 +1183,7 @@ db.exec(`
     rarity_color TEXT NOT NULL,
     rarity_rank INTEGER NOT NULL,
     source TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
+    status TEXT NOT NULL DEFAULT 'AVAILABLE',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id)
@@ -1179,7 +1217,39 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_drops_created ON live_drops(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_site_inventory_user ON site_inventory(user_id, status, id DESC);
   CREATE INDEX IF NOT EXISTS idx_case_openings_user ON case_openings(user_id, case_id);
+  CREATE TABLE IF NOT EXISTS case_once_claims(
+    user_id INTEGER NOT NULL,
+    case_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(user_id,case_id)
+  );
+  CREATE TABLE IF NOT EXISTS case_counters(
+    case_id TEXT PRIMARY KEY,
+    open_count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
 `);
+
+const { ApiError, createIdempotency, sendApiError } = require('./lib/idempotency');
+const operations = createIdempotency(db);
+setInterval(() => { try { operations.clean(); } catch {} }, 60 * 60 * 1000).unref();
+db.prepare(`UPDATE site_inventory SET status=CASE LOWER(status)
+  WHEN 'active' THEN 'AVAILABLE'
+  WHEN 'available' THEN 'AVAILABLE'
+  WHEN 'locked' THEN 'LOCKED'
+  WHEN 'processing' THEN 'PROCESSING'
+  WHEN 'sold' THEN 'SOLD'
+  WHEN 'used' THEN 'CONSUMED'
+  WHEN 'consumed' THEN 'CONSUMED'
+  WHEN 'withdrawn' THEN 'WITHDRAWN'
+  WHEN 'revoked' THEN 'REVOKED'
+  ELSE status END`).run();
+db.prepare(`INSERT INTO case_counters(case_id,open_count,updated_at)
+  SELECT case_id,COUNT(*),? FROM case_openings GROUP BY case_id
+  ON CONFLICT(case_id) DO NOTHING`).run(Date.now());
+db.prepare(`INSERT INTO case_once_claims(user_id,case_id,created_at)
+  SELECT user_id,case_id,MIN(created_at) FROM case_openings GROUP BY user_id,case_id
+  ON CONFLICT(user_id,case_id) DO NOTHING`).run();
 
 function tableColumns(table) {
   if (db.driver === 'postgres') {
@@ -1219,6 +1289,12 @@ ensureColumn('users', 'email_optout', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'frozen', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'freeze_reason', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'tags', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('case_openings', 'request_id', 'TEXT');
+ensureColumn('upgrade_rounds', 'request_id', 'TEXT');
+ensureColumn('upgrade_rounds', 'source_price_cents', 'INTEGER');
+ensureColumn('upgrade_rounds', 'target_price_cents', 'INTEGER');
+ensureColumn('upgrade_rounds', 'balance_stake_cents', 'INTEGER');
+ensureColumn('upgrade_rounds', 'roll', 'REAL');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS support_tickets(
@@ -1383,6 +1459,8 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_case_openings_case ON case_openings(case_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_case_openings_request ON case_openings(user_id,request_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_upgrade_rounds_request ON upgrade_rounds(user_id,request_id);
 `);
 
 ensureColumn('notifications', 'scheduled_at', 'INTEGER');
@@ -1576,7 +1654,7 @@ function isSecureRequest(res) {
 function setCookie(res, token) {
   const parts = [
     `session=${encodeURIComponent(token)}`,
-    'Path=/',
+    `Path=${APP_BASE_PATH || '/'}`,
     'HttpOnly',
     'SameSite=Lax',
     'Max-Age=2592000'
@@ -1587,9 +1665,44 @@ function setCookie(res, token) {
 }
 function clearCookie(res, token) {
   if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(token);
-  const parts = ['session=', 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  const cookiePath = APP_BASE_PATH || '/';
+  const parts = ['session=', `Path=${cookiePath}`, 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
   if (isSecureRequest(res)) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
+}
+function csrfToken(req) {
+  const token = cookies(req.headers.cookie || '').session;
+  return token ? sign(`csrf:${token}`) : '';
+}
+function safeEqualText(left, right) {
+  const a = Buffer.from(String(left || ''));
+  const b = Buffer.from(String(right || ''));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+app.use((req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  const site = String(req.get('Sec-Fetch-Site') || '').toLowerCase();
+  if (site === 'cross-site') return res.status(403).json({ error: 'Межсайтовый запрос отклонён', code: 'CSRF_REJECTED' });
+  const origin = req.get('Origin');
+  if (origin) {
+    try {
+      const expected = new URL(requestBase(req)).origin;
+      if (new URL(origin).origin !== expected) return res.status(403).json({ error: 'Источник запроса не разрешён', code: 'ORIGIN_REJECTED' });
+    } catch {
+      return res.status(403).json({ error: 'Источник запроса не разрешён', code: 'ORIGIN_REJECTED' });
+    }
+  }
+  const account = currentUser(req);
+  if (!account) return next();
+  const expected = csrfToken(req);
+  const supplied = req.get('X-CSRF-Token');
+  if (!safeEqualText(expected, supplied)) return res.status(403).json({ error: 'Защитный токен устарел, обновите страницу', code: 'CSRF_TOKEN_INVALID' });
+  next();
+});
+function sendOperationResult(res, result) {
+  res.setHeader('Idempotency-Key', result.requestId);
+  res.setHeader('Idempotency-Replayed', result.replayed ? 'true' : 'false');
+  return res.status(result.status).json(result.payload);
 }
 function broadcast(type, payload) {
   const audience = payload && payload.audience ? payload.audience : null;
@@ -1604,7 +1717,7 @@ function broadcast(type, payload) {
 }
 function requestBase(req) {
   if (process.env.BASE_URL) return BASE_URL;
-  return `${req.protocol}://${req.get('host')}`.replace(/\/$/, '');
+  return `${req.protocol}://${req.get('host')}${APP_BASE_PATH}`.replace(/\/$/, '');
 }
 function steamLogin(req) {
   const base = requestBase(req);
@@ -1623,7 +1736,7 @@ const usedOpenIdNonces = new Map();
 async function verifySteam(req) {
   const normalizeUrl = u => String(u || '').trim().toLowerCase().replace(/\/+$/, '');
   const baseFromEnv = normalizeUrl(BASE_URL);
-  const baseFromReq = normalizeUrl(`${req.protocol}://${req.get('host')}`);
+  const baseFromReq = normalizeUrl(`${req.protocol}://${req.get('host')}${APP_BASE_PATH}`);
   const expectedSet = new Set([baseFromEnv, baseFromReq].filter(Boolean).map(b => `${b}/auth/steam/callback`));
   const providedReturnTo = String(req.query['openid.return_to'] || req.query.openid_return_to || '');
   if (!providedReturnTo) throw new Error('OpenID return_to missing');
@@ -1777,26 +1890,9 @@ function inventoryRows(userId) {
       rarity_color AS rarityColor, rarity_rank AS rarityRank,
       source, created_at AS createdAt
     FROM site_inventory
-    WHERE user_id = ? AND status = 'active'
+    WHERE user_id = ? AND status = 'AVAILABLE'
     ORDER BY id DESC
   `).all(userId).map(row => withSteamIcon({
-    ...row,
-    assetid: String(row.assetid),
-    wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
-  }));
-}
-function inventoryFeedRows(userId, limit = 60) {
-  return db.prepare(`
-    SELECT id AS assetid, catalog_id AS catalogId, item_name AS name,
-      weapon_name AS weapon, skin_name AS skin, skin_name AS marketName,
-      item_icon AS icon, price_cents AS priceCents, rarity,
-      rarity_color AS rarityColor, rarity_rank AS rarityRank,
-      source, status, created_at AS createdAt
-    FROM site_inventory
-    WHERE user_id = ?
-    ORDER BY id DESC
-    LIMIT ?
-  `).all(userId, limit).map(row => withSteamIcon({
     ...row,
     assetid: String(row.assetid),
     wear: CATALOG_BY_ID.get(row.catalogId)?.wear || ''
@@ -1807,7 +1903,7 @@ function insertInventoryItem(userId, catalog, source, now = Date.now()) {
     INSERT INTO site_inventory(
       user_id,catalog_id,item_name,weapon_name,skin_name,item_icon,price_cents,
       rarity,rarity_color,rarity_rank,source,status,created_at,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',?,?)
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'AVAILABLE',?,?)
   `).run(
     userId, catalog.catalogId, catalog.name, catalog.weapon, catalog.skin, catalog.icon,
     catalog.priceCents, catalog.rarity, catalog.rarityColor, catalog.rarityRank, source, now, now
@@ -1884,7 +1980,7 @@ function caseState(caseData, userId) {
   return { override, opened, enabled, totalOpened, basePrice, discount, finalPrice };
 }
 
-function caseView(caseData, userId) {
+function caseView(caseData, userId, includeContents = true) {
   const state = caseState(caseData, userId);
   return {
     id: caseData.id,
@@ -1902,11 +1998,11 @@ function caseView(caseData, userId) {
     levelMin: Number(caseData.level_min || 0),
     startsAt: caseData.starts_at ? Number(caseData.starts_at) : null,
     endsAt: caseData.ends_at ? Number(caseData.ends_at) : null,
-    contents: (caseData.contents || []).map(([id, weight]) => {
+    contents: includeContents ? (caseData.contents || []).map(([id, weight]) => {
       const item = CATALOG_BY_ID.get(id);
       const pub = item ? publicCatalogItem(item) : null;
       return pub ? { ...pub, weight } : null;
-    }).filter(Boolean)
+    }).filter(Boolean) : []
   };
 }
 
@@ -1927,7 +2023,7 @@ app.get('/auth/steam/callback', async (req, res) => {
         .run(steamid, profile.name, profile.avatar, now, now).lastInsertRowid);
     }
     setCookie(res, createSession(userId));
-    res.redirect('/');
+    res.redirect(appPath('/'));
   } catch (error) {
     console.error('[steam callback]', error.message);
     const msg = String(error.message || '');
@@ -1977,7 +2073,7 @@ queue.on('audit.write', payload => {
   db.prepare('INSERT INTO admin_logs(admin_id,admin_name,action,target,details,created_at) VALUES(?,?,?,?,?,?)')
     .run(payload.adminId, payload.adminName, payload.action, payload.target, payload.details, payload.createdAt || Date.now());
 });
-require('./routes/7vljdnqqbrjyhj330sxtjo.js')({app:app,db:db,CATALOG:CATALOG,currentUser:currentUser,withSteamIcon:withSteamIcon,insertInventoryItem:insertInventoryItem,addLiveDrop:addLiveDrop,recordTransaction:recordTransaction});
+require('./routes/7vljdnqqbrjyhj330sxtjo.js')({ app, db, CATALOG, currentUser, withSteamIcon, insertInventoryItem, addLiveDrop, recordTransaction, operations, ApiError, sendApiError, sendOperationResult, queue, paymentsMode: PAYMENTS_MODE });
 app.get('/api/config', (_, res) => {
   let banner = null;
   try { banner = JSON.parse(settingGetRaw('site_banner', 'null')); } catch {}
@@ -1986,7 +2082,9 @@ app.get('/api/config', (_, res) => {
     telegram: settingGetRaw('site_telegram', TELEGRAM_URL) || TELEGRAM_URL,
     supportEmail: settingGetRaw('site_support_email', 'support@caser.gg'),
     marketingEmail: settingGetRaw('site_marketing_email', 'marketing@caser.gg'),
-    banner: banner && banner.enabled ? banner : null
+    banner: banner && banner.enabled ? banner : null,
+    basePath: APP_BASE_PATH,
+    paymentsMode: PAYMENTS_MODE
   });
 });
 app.get('/api/stats', (_, res) => {
@@ -2025,7 +2123,8 @@ app.get('/api/me', async (req, res) => {
       role: roleOf(account), banned: !!account.banned, banReason: account.ban_reason || '',
       frozen: !!account.frozen, freezeReason: account.freeze_reason || '',
       tags: (() => { try { return JSON.parse(account.tags || '[]'); } catch { return []; } })()
-    }
+    },
+    csrfToken: csrfToken(req)
   });
 });
 app.get('/api/users/:id/profile', (req, res) => {
@@ -2037,7 +2136,7 @@ app.get('/api/users/:id/profile', (req, res) => {
   const staff = viewer && isStaff(viewer);
   const privacy = user.profile_privacy || 'private';
   const showSteamIdentity = own || staff || privacy === 'public';
-  const items = db.prepare(`SELECT id AS assetid,catalog_id AS catalogId,item_name AS name,weapon_name AS weapon,skin_name AS skin,item_icon AS icon,price_cents AS priceCents,rarity,rarity_color AS rarityColor,rarity_rank AS rarityRank,source,status,created_at AS createdAt FROM site_inventory WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 100`).all(userId).map(item=>withSteamIcon({...item,assetid:String(item.assetid)}));
+  const items = db.prepare(`SELECT id AS assetid,catalog_id AS catalogId,item_name AS name,weapon_name AS weapon,skin_name AS skin,item_icon AS icon,price_cents AS priceCents,rarity,rarity_color AS rarityColor,rarity_rank AS rarityRank,source,status,created_at AS createdAt FROM site_inventory WHERE user_id=? AND status='AVAILABLE' ORDER BY id DESC LIMIT 100`).all(userId).map(item=>withSteamIcon({...item,assetid:String(item.assetid)}));
   const history = db.prepare(`SELECT id AS assetid,catalog_id AS catalogId,item_name AS name,weapon_name AS weapon,skin_name AS skin,item_icon AS icon,price_cents AS priceCents,rarity,rarity_color AS rarityColor,rarity_rank AS rarityRank,source,status,created_at AS createdAt FROM site_inventory WHERE user_id=? ORDER BY id DESC LIMIT 50`).all(userId).map(item=>withSteamIcon({...item,assetid:String(item.assetid)}));
   const upgrades = db.prepare(`SELECT r.id,r.chance,r.won,r.target_catalog_id AS targetCatalogId,r.created_at AS createdAt,a.item_name AS fromName,a.item_icon AS fromIcon,a.price_cents AS fromPriceCents,t.item_name AS toName,t.item_icon AS toIcon,t.price_cents AS toPriceCents FROM upgrade_rounds r LEFT JOIN site_inventory a ON a.id=r.from_item_id LEFT JOIN site_inventory t ON t.id=r.result_item_id WHERE r.user_id=? ORDER BY r.id DESC LIMIT 40`).all(userId).map(row=>{const target=CATALOG_BY_ID.get(String(row.targetCatalogId||''));return {...row,won:!!row.won,toName:row.toName||target?.name||'',toIcon:row.toIcon||target?.icon||'',toPriceCents:row.toPriceCents??target?.priceCents??0};});
   const bestDrop = history.slice().sort((a,b)=>Number(b.priceCents)-Number(a.priceCents))[0] || null;
@@ -2113,7 +2212,7 @@ app.get('/api/profile', (req, res) => {
   const casesOpened = db.prepare('SELECT COUNT(*) AS count FROM case_openings WHERE user_id = ?').get(account.id).count;
   const upgradesMade = db.prepare('SELECT COUNT(*) AS count FROM upgrade_rounds WHERE user_id = ?').get(account.id).count;
   const sold = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(amount_cents),0) AS total FROM inventory_sales WHERE user_id = ?').get(account.id);
-  const activeItems = db.prepare("SELECT COUNT(*) AS count FROM site_inventory WHERE user_id = ? AND status = 'active'").get(account.id).count;
+  const activeItems = db.prepare("SELECT COUNT(*) AS count FROM site_inventory WHERE user_id = ? AND status = 'AVAILABLE'").get(account.id).count;
   res.json({
     user: { id: account.id, steamid: account.steamid, name: account.name, avatar: account.avatar, role: roleOf(account) },
     balanceCents: account.balance_cents,
@@ -2190,188 +2289,196 @@ app.get('/api/catalog', (_, res) => {
 app.get('/api/inventory', (req, res) => {
   const account = currentUser(req);
   if (!account) return res.status(401).json({ authenticated: false });
-  res.json({ authenticated: true, items: inventoryRows(account.id), feed: inventoryFeedRows(account.id) });
+  res.json({ authenticated: true, items: inventoryRows(account.id) });
 });
 app.post('/api/inventory/:id/sell', (req, res) => {
   const account = currentUser(req);
-  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam', code: 'AUTH_REQUIRED' });
   const itemId = Number(req.params.id);
-  if (!Number.isSafeInteger(itemId)) return res.status(400).json({ error: 'Предмет не найден' });
+  if (!Number.isSafeInteger(itemId)) return res.status(400).json({ error: 'Предмет не найден', code: 'ITEM_INVALID' });
   try {
-    const result = db.transaction(() => {
-      const item = db.prepare("SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'")
-        .get(itemId, account.id);
-      if (!item) throw new Error('Предмет уже недоступен');
-      const now = Date.now();
-      const changed = db.prepare("UPDATE site_inventory SET status = 'sold', updated_at = ? WHERE id = ? AND status = 'active'")
-        .run(now, itemId);
-      if (!changed.changes) throw new Error('Предмет уже недоступен');
-      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?')
-        .run(item.price_cents, now, account.id);
+    const result = operations.run(req, account.id, 'inventory_sell', ({ now }) => {
+      const claimed = db.prepare("UPDATE site_inventory SET status='PROCESSING',updated_at=? WHERE id=? AND user_id=? AND status='AVAILABLE'")
+        .run(now, itemId, account.id);
+      if (!claimed.changes) throw new ApiError(409, 'ITEM_UNAVAILABLE', 'Предмет уже недоступен');
+      const item = db.prepare("SELECT * FROM site_inventory WHERE id=? AND user_id=? AND status='PROCESSING'").get(itemId, account.id);
+      if (!item) throw new ApiError(409, 'ITEM_OWNERSHIP_CHANGED', 'Владелец или состояние предмета изменились');
+      const sold = db.prepare("UPDATE site_inventory SET status='SOLD',updated_at=? WHERE id=? AND user_id=? AND status='PROCESSING'")
+        .run(now, itemId, account.id);
+      if (!sold.changes) throw new ApiError(409, 'ITEM_UNAVAILABLE', 'Предмет уже недоступен');
+      db.prepare('UPDATE users SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(item.price_cents, now, account.id);
       db.prepare('INSERT INTO inventory_sales(user_id,inventory_item_id,amount_cents,created_at) VALUES(?,?,?,?)')
         .run(account.id, itemId, item.price_cents, now);
-      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(account.id).balance_cents;
       recordTransaction(account.id, 'item_sale', item.price_cents, balance, item.item_name, now);
-      return { amountCents: item.price_cents, balanceCents: balance };
-    })();
-    res.json({ ok: true, ...result });
+      return { ok: true, amountCents: item.price_cents, balanceCents: balance };
+    });
+    sendOperationResult(res, result);
   } catch (error) {
-    res.status(400).json({ error: error.message || 'Не удалось продать предмет' });
+    sendApiError(res, error, 'Не удалось продать предмет');
   }
 });
 app.post('/api/cx-sell-all', (req, res) => {
   const account = currentUser(req);
-  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam', code: 'AUTH_REQUIRED' });
   try {
-    const result = db.transaction(() => {
-      const items = db.prepare("SELECT * FROM site_inventory WHERE user_id = ? AND status = 'active'").all(account.id);
-      if (!items.length) throw new Error('Инвентарь пуст');
-      const now = Date.now();
+    const result = operations.run(req, account.id, 'inventory_sell_all', ({ now }) => {
+      const available = db.prepare("SELECT * FROM site_inventory WHERE user_id=? AND status='AVAILABLE' ORDER BY id").all(account.id);
+      if (!available.length) throw new ApiError(409, 'INVENTORY_EMPTY', 'Инвентарь пуст');
       let total = 0;
-      const sellOne = db.prepare("UPDATE site_inventory SET status = 'sold', updated_at = ? WHERE id = ? AND status = 'active'");
+      let count = 0;
+      const claim = db.prepare("UPDATE site_inventory SET status='PROCESSING',updated_at=? WHERE id=? AND user_id=? AND status='AVAILABLE'");
+      const sell = db.prepare("UPDATE site_inventory SET status='SOLD',updated_at=? WHERE id=? AND user_id=? AND status='PROCESSING'");
       const addSale = db.prepare('INSERT INTO inventory_sales(user_id,inventory_item_id,amount_cents,created_at) VALUES(?,?,?,?)');
-      for (const item of items) {
-        const changed = sellOne.run(now, item.id);
-        if (!changed.changes) continue;
-        total += Number(item.price_cents || 0);
+      for (const item of available) {
+        if (!claim.run(now, item.id, account.id).changes) continue;
+        if (!sell.run(now, item.id, account.id).changes) throw new ApiError(409, 'ITEM_UNAVAILABLE', 'Состояние инвентаря изменилось');
         addSale.run(account.id, item.id, item.price_cents, now);
+        total += Number(item.price_cents || 0);
+        count += 1;
       }
-      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?').run(total, now, account.id);
-      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
-      recordTransaction(account.id, 'item_sale', total, balance, 'sell_all', now);
-      return { count: items.length, totalCents: total, balanceCents: balance };
-    })();
-    res.json({ ok: true, ...result });
+      if (!count) throw new ApiError(409, 'INVENTORY_CHANGED', 'Инвентарь был изменён в другой вкладке');
+      db.prepare('UPDATE users SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(total, now, account.id);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(account.id).balance_cents;
+      recordTransaction(account.id, 'item_sale', total, balance, `sell_all:${count}`, now);
+      return { ok: true, count, totalCents: total, balanceCents: balance };
+    }, { cooldown: 750 });
+    sendOperationResult(res, result);
   } catch (error) {
-    res.status(400).json({ error: error.message || 'Не удалось продать предметы' });
+    sendApiError(res, error, 'Не удалось продать предметы');
   }
 });
 app.get('/api/cases', (req, res) => {
   const account = currentUser(req);
-  res.json({ authenticated: !!account, cases: CASES.map(item => caseView(item, account?.id)) });
+  res.json({ authenticated: !!account, cases: CASES.map(item => caseView(item, account?.id, false)) });
+});
+app.get('/api/cases/:id', (req, res) => {
+  const account = currentUser(req);
+  const caseData = CASES_BY_ID.get(String(req.params.id || ''));
+  if (!caseData) return res.status(404).json({ error: 'Кейс не найден', code: 'CASE_NOT_FOUND' });
+  res.json({ authenticated: !!account, case: caseView(caseData, account?.id, true) });
 });
 app.post('/api/cases/open', (req, res) => {
   const account = currentUser(req);
-  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
-  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam', code: 'AUTH_REQUIRED' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован', code: 'ACCOUNT_BANNED' });
   const caseData = CASES_BY_ID.get(String(req.body?.caseId || ''));
-  if (!caseData) return res.status(404).json({ error: 'Кейс не найден' });
+  if (!caseData) return res.status(404).json({ error: 'Кейс не найден', code: 'CASE_NOT_FOUND' });
+  let dropToPublish = null;
   try {
-    const result = db.transaction(() => {
+    const result = operations.run(req, account.id, 'case_open', ({ requestId, now }) => {
+      const freshAccount = db.prepare('SELECT * FROM users WHERE id=?').get(account.id);
+      if (!freshAccount || freshAccount.banned) throw new ApiError(403, 'ACCOUNT_BLOCKED', 'Операция для аккаунта недоступна');
       const state = caseState(caseData, account.id);
-      if (state.override && !state.override.enabled) throw new Error('Кейс временно отключён');
-      if (!state.enabled) throw new Error('Кейс недоступен');
-      if (state.opened) throw new Error('Стартовый кейс уже был открыт');
-      const casePrice = state.finalPrice;
-      const now = Date.now();
-      if (casePrice > 0) {
-        const charged = db.prepare(`
-          UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
-          WHERE id = ? AND balance_cents >= ?
-        `).run(casePrice, now, account.id, casePrice);
-        if (!charged.changes) throw new Error('Недостаточно средств на балансе');
+      if (state.override && !state.override.enabled) throw new ApiError(422, 'CASE_DISABLED', 'Кейс временно отключён');
+      if (!state.enabled) throw new ApiError(422, 'CASE_UNAVAILABLE', 'Кейс недоступен');
+      if (caseData.once) {
+        const once = db.prepare(`INSERT INTO case_once_claims(user_id,case_id,created_at) VALUES(?,?,?) ON CONFLICT(user_id,case_id) DO NOTHING`)
+          .run(account.id, caseData.id, now);
+        if (!once.changes) throw new ApiError(409, 'CASE_ALREADY_OPENED', 'Этот кейс уже был открыт');
       }
-      const won = pickWeighted(caseData.contents, account);
+      db.prepare(`INSERT INTO case_counters(case_id,open_count,updated_at) VALUES(?,0,?) ON CONFLICT(case_id) DO NOTHING`)
+        .run(caseData.id, now);
+      const maxOpenings = Math.max(0, Number(caseData.max_openings || 0));
+      const counted = maxOpenings > 0
+        ? db.prepare('UPDATE case_counters SET open_count=open_count+1,updated_at=? WHERE case_id=? AND open_count<?').run(now, caseData.id, maxOpenings)
+        : db.prepare('UPDATE case_counters SET open_count=open_count+1,updated_at=? WHERE case_id=?').run(now, caseData.id);
+      if (!counted.changes) throw new ApiError(409, 'CASE_LIMIT_REACHED', 'Лимит открытий кейса исчерпан');
+      const casePrice = Math.max(0, Math.floor(Number(state.finalPrice || 0)));
+      if (casePrice > 0) {
+        const charged = db.prepare('UPDATE users SET balance_cents=balance_cents-?,updated_at=? WHERE id=? AND balance_cents>=?')
+          .run(casePrice, now, account.id, casePrice);
+        if (!charged.changes) throw new ApiError(422, 'INSUFFICIENT_BALANCE', 'Недостаточно средств на балансе');
+      }
+      const won = pickWeighted(caseData.contents, freshAccount);
+      if (!won || !CATALOG_BY_ID.has(String(won.catalogId))) throw new ApiError(500, 'CASE_CONTENT_INVALID', 'Содержимое кейса настроено некорректно');
       const inventoryId = insertInventoryItem(account.id, won, `case:${caseData.id}`, now);
-      db.prepare('INSERT INTO case_openings(user_id,case_id,inventory_item_id,cost_cents,created_at) VALUES(?,?,?,?,?)')
-        .run(account.id, caseData.id, inventoryId, casePrice, now);
-      if (casePrice > 0) {
-        const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
-        recordTransaction(account.id, 'case_open', -casePrice, after, caseData.name, now);
-      }
-      const drop = addLiveDrop(account.id, account.name, won, 'case', now);
-      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
-      const wonPublic = withSteamIcon({ ...won, assetid: String(inventoryId) });
-      return { won: wonPublic, drop, balanceCents: balance };
-    })();
-    queue.publish('drop.broadcast', result.drop);
-    queue.publish('stats.refresh', {});
-    res.json({ ok: true, item: result.won, balanceCents: result.balanceCents });
+      db.prepare('INSERT INTO case_openings(user_id,case_id,inventory_item_id,cost_cents,created_at,request_id) VALUES(?,?,?,?,?,?)')
+        .run(account.id, caseData.id, inventoryId, casePrice, now, requestId);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(account.id).balance_cents;
+      if (casePrice > 0) recordTransaction(account.id, 'case_open', -casePrice, balance, caseData.name, now);
+      dropToPublish = addLiveDrop(account.id, freshAccount.name, won, 'case', now);
+      return { ok: true, item: withSteamIcon({ ...won, assetid: String(inventoryId) }), balanceCents: balance };
+    }, { cooldown: 1000 });
+    if (!result.replayed && dropToPublish) queue.publish('drop.broadcast', dropToPublish);
+    if (!result.replayed) queue.publish('stats.refresh', {});
+    sendOperationResult(res, result);
   } catch (error) {
-    res.status(400).json({ error: error.message || 'Не удалось открыть кейс' });
+    sendApiError(res, error, 'Не удалось открыть кейс');
   }
 });
 
 app.post('/api/upgrade', async (req, res) => {
   const account = currentUser(req);
-  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
-  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam', code: 'AUTH_REQUIRED' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован', code: 'ACCOUNT_BANNED' });
   const fromId = Number(req.body?.fromAssetId);
   const target = CATALOG_BY_ID.get(String(req.body?.toCatalogId || ''));
   const boostPercent = Number(req.body?.boostPercent || 30);
   const allowedBoosts = new Set([30, 50, 75, 200, 500, 1000]);
   const addBalanceCents = Math.floor(Number(req.body?.addBalanceCents || 0));
-  if (!Number.isSafeInteger(fromId) || !target) return res.status(400).json({ error: 'Выберите оба предмета' });
-  if (!allowedBoosts.has(boostPercent)) return res.status(400).json({ error: 'Недопустимый процент апгрейда' });
-  if (!Number.isSafeInteger(addBalanceCents) || addBalanceCents < 0) return res.status(400).json({ error: 'Недопустимая сумма из баланса' });
-
+  if (!Number.isSafeInteger(fromId) || !target) return res.status(400).json({ error: 'Выберите оба предмета', code: 'UPGRADE_ITEMS_REQUIRED' });
+  if (!allowedBoosts.has(boostPercent)) return res.status(422).json({ error: 'Недопустимый процент апгрейда', code: 'UPGRADE_BOOST_INVALID' });
+  if (!Number.isSafeInteger(addBalanceCents) || addBalanceCents < 0) return res.status(422).json({ error: 'Недопустимая сумма из баланса', code: 'UPGRADE_STAKE_INVALID' });
+  let dropToPublish = null;
   try {
-    const targetPriceCents = Math.max(1, Math.floor(Number(target.priceCents) || 0));
-    if (!(targetPriceCents > 1)) throw new Error('Не удалось получить цену цели, попробуйте ещё раз');
-    const result = db.transaction(() => {
-      const from = db.prepare(`
-        SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'
-      `).get(fromId, account.id);
-      if (!from) throw new Error('Исходный предмет уже недоступен');
-      if (addBalanceCents > Number(account.balance_cents || 0)) throw new Error('Недостаточно средств на балансе');
-      const totalValue = Number(from.price_cents) + addBalanceCents;
-      if (!(totalValue > 0)) throw new Error('Ставка должна быть больше нуля');
-
+    const resolvedPrice = await resolveTargetPrice(target, 2500);
+    const targetPriceCents = Math.floor(Number(resolvedPrice || target.priceCents || 0));
+    if (targetPriceCents <= 1) throw new ApiError(503, 'TARGET_PRICE_UNAVAILABLE', 'Не удалось получить актуальную цену цели');
+    const result = operations.run(req, account.id, 'upgrade', ({ requestId, now }) => {
+      const claimed = db.prepare("UPDATE site_inventory SET status='PROCESSING',updated_at=? WHERE id=? AND user_id=? AND status='AVAILABLE'")
+        .run(now, fromId, account.id);
+      if (!claimed.changes) throw new ApiError(409, 'SOURCE_ITEM_UNAVAILABLE', 'Исходный предмет уже недоступен');
+      const from = db.prepare("SELECT * FROM site_inventory WHERE id=? AND user_id=? AND status='PROCESSING'").get(fromId, account.id);
+      if (!from) throw new ApiError(409, 'SOURCE_OWNERSHIP_CHANGED', 'Владелец или состояние исходного предмета изменились');
+      const freshAccount = db.prepare('SELECT * FROM users WHERE id=?').get(account.id);
+      if (!freshAccount || freshAccount.banned) throw new ApiError(403, 'ACCOUNT_BLOCKED', 'Операция для аккаунта недоступна');
+      const sourcePriceCents = Math.max(1, Math.floor(Number(from.price_cents || 0)));
+      const totalValue = sourcePriceCents + addBalanceCents;
       const minTarget = boostPercent >= 100
         ? Math.ceil(totalValue * boostPercent / 100)
         : Math.ceil(totalValue * 100 / boostPercent);
-      if (targetPriceCents < Math.floor(minTarget * 0.98)) {
-        throw new Error('Цель не соответствует выбранному проценту апгрейда');
-      }
-
-      const currentBalance = Number(
-        db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents
-      );
-      if (addBalanceCents > currentBalance) throw new Error('Недостаточно средств на балансе');
+      if (targetPriceCents < Math.floor(minTarget * 0.98)) throw new ApiError(422, 'UPGRADE_TARGET_INVALID', 'Цель не соответствует выбранному проценту апгрейда');
       if (addBalanceCents > 0) {
-        const charged = db.prepare(`
-          UPDATE users SET balance_cents = balance_cents - ?, updated_at = ?
-          WHERE id = ? AND balance_cents >= ?
-        `).run(addBalanceCents, Date.now(), account.id, addBalanceCents);
-        if (!charged.changes) throw new Error('Недостаточно средств на балансе');
-        const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
-        recordTransaction(account.id, 'upgrade_stake', -addBalanceCents, after, 'Ставка в апгрейде');
+        const charged = db.prepare('UPDATE users SET balance_cents=balance_cents-?,updated_at=? WHERE id=? AND balance_cents>=?')
+          .run(addBalanceCents, now, account.id, addBalanceCents);
+        if (!charged.changes) throw new ApiError(422, 'INSUFFICIENT_BALANCE', 'Недостаточно средств на балансе');
       }
       const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / targetPriceCents * 10000) / 100));
-      const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(account.luck_modifier || 0)));
+      const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(freshAccount.luck_modifier || 0)));
       const effectiveChance = Math.min(100, Math.max(0, baseChance * (1 + luck / 100)));
       const chance = Math.round(effectiveChance * 100) / 100;
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < effectiveChance;
-      const now = Date.now();
-      const consumed = db.prepare("UPDATE site_inventory SET status = 'used', updated_at = ? WHERE id = ? AND status = 'active'").run(now, fromId);
-      if (!consumed.changes) throw new Error('Исходный предмет уже недоступен');
+      const consumed = db.prepare("UPDATE site_inventory SET status='CONSUMED',updated_at=? WHERE id=? AND user_id=? AND status='PROCESSING'")
+        .run(now, fromId, account.id);
+      if (!consumed.changes) throw new ApiError(409, 'SOURCE_ITEM_UNAVAILABLE', 'Исходный предмет уже недоступен');
       let resultItemId = null;
-      let drop = null;
       if (won) {
         const awarded = { ...target, priceCents: targetPriceCents };
         resultItemId = insertInventoryItem(account.id, awarded, `upgrade:${fromId}`, now);
-        drop = addLiveDrop(account.id, account.name, awarded, 'upgrade', now);
+        dropToPublish = addLiveDrop(account.id, freshAccount.name, awarded, 'upgrade', now);
       }
-      db.prepare(`
-        INSERT INTO upgrade_rounds(user_id,from_item_id,target_catalog_id,chance,won,result_item_id,created_at)
-        VALUES(?,?,?,?,?,?,?)
-      `).run(account.id, fromId, target.catalogId, chance, won ? 1 : 0, resultItemId, now);
+      db.prepare(`INSERT INTO upgrade_rounds(user_id,from_item_id,target_catalog_id,chance,won,result_item_id,created_at,request_id,source_price_cents,target_price_cents,balance_stake_cents,roll)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(account.id, fromId, target.catalogId, chance, won ? 1 : 0, resultItemId, now, requestId, sourcePriceCents, targetPriceCents, addBalanceCents, roll);
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(account.id).balance_cents;
+      if (addBalanceCents > 0) recordTransaction(account.id, 'upgrade_stake', -addBalanceCents, balance, 'Ставка в апгрейде', now);
       return {
+        ok: true,
         won,
         chance,
         boostPercent,
         addBalanceCents,
-        roll: Math.floor(roll * 100) / 100,
-        item: won ? withSteamIcon({ ...target, priceCents: targetPriceCents, assetid: String(resultItemId) }) : null,
-        drop
+        balanceCents: balance,
+        item: won ? withSteamIcon({ ...target, priceCents: targetPriceCents, assetid: String(resultItemId) }) : null
       };
-    })();
-    if (result.drop) queue.publish('drop.broadcast', result.drop);
-    queue.publish('stats.refresh', {});
-    res.json({ ok: true, won: result.won, chance: result.chance, boostPercent: result.boostPercent, addBalanceCents: result.addBalanceCents, item: result.item });
+    }, { cooldown: 400 });
+    if (!result.replayed && dropToPublish) queue.publish('drop.broadcast', dropToPublish);
+    if (!result.replayed) queue.publish('stats.refresh', {});
+    sendOperationResult(res, result);
   } catch (error) {
-    res.status(400).json({ error: error.message || 'Не удалось выполнить апгрейд' });
+    sendApiError(res, error, 'Не удалось выполнить апгрейд');
   }
 });
 
@@ -2387,7 +2494,9 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
+  res.write(`retry: 3000\nevent: connected\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);
   const account = currentUser(req);
   const ip = req.ip || 'local';
   const ua = req.headers['user-agent'] || '';
@@ -2408,7 +2517,7 @@ app.get('/api/events', (req, res) => {
   };
   onlineClients.set(id, entry);
   broadcast('online', { online: onlineCount() });
-  const heartbeat = setInterval(() => { try { res.write(':hb\n\n'); } catch {} }, 25000);
+  const heartbeat = setInterval(() => { try { res.write(`event: heartbeat\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`); } catch {} }, 25000);
   req.on('close', () => {
     clearInterval(heartbeat);
     onlineClients.delete(id);
@@ -2436,30 +2545,32 @@ app.get('/api/admin/online', requireAdmin, (req, res) => {
 app.get('/api/promo/redeem', (_, res) => res.status(405).json({ error: 'Используйте POST' }));
 app.post('/api/promo/redeem', (req, res) => {
   const account = currentUser(req);
-  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam' });
-  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован' });
+  if (!account) return res.status(401).json({ error: 'Сначала авторизуйтесь через Steam', code: 'AUTH_REQUIRED' });
+  if (account.banned) return res.status(403).json({ error: account.ban_reason || 'Аккаунт заблокирован', code: 'ACCOUNT_BANNED' });
   const code = String(req.body?.code || '').trim().toUpperCase();
-  if (!code) return res.status(400).json({ error: 'Введите промокод' });
+  if (!/^[A-Z0-9_-]{2,64}$/.test(code)) return res.status(422).json({ error: 'Введите корректный промокод', code: 'PROMO_INVALID' });
   try {
-    const result = db.transaction(() => {
-      const promo = db.prepare('SELECT * FROM promo_codes WHERE code = ?').get(code);
-      if (!promo || !promo.active) throw new Error('Промокод не найден');
-      if (promo.expires_at && promo.expires_at < Date.now()) throw new Error('Срок действия промокода истёк');
-      if (promo.max_uses > 0 && promo.used_count >= promo.max_uses) throw new Error('Лимит активаций исчерпан');
-      const already = db.prepare('SELECT 1 FROM promo_redemptions WHERE promo_id = ? AND user_id = ?').get(promo.id, account.id);
-      if (already) throw new Error('Вы уже использовали этот промокод');
-      const now = Date.now();
-      db.prepare('INSERT INTO promo_redemptions(promo_id,user_id,created_at) VALUES(?,?,?)').run(promo.id, account.id, now);
-      db.prepare('UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?').run(promo.id);
-      db.prepare('UPDATE users SET balance_cents = balance_cents + ?, updated_at = ? WHERE id = ?')
-        .run(promo.amount_cents, now, account.id);
-      const balance = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
+    const result = operations.run(req, account.id, 'promo_redeem', ({ now }) => {
+      const promo = db.prepare('SELECT * FROM promo_codes WHERE code=?').get(code);
+      if (!promo || !promo.active) throw new ApiError(404, 'PROMO_NOT_FOUND', 'Промокод не найден');
+      if (promo.expires_at && Number(promo.expires_at) < now) throw new ApiError(422, 'PROMO_EXPIRED', 'Срок действия промокода истёк');
+      const claimed = db.prepare(`UPDATE promo_codes SET used_count=used_count+1 WHERE id=? AND active=1 AND (max_uses=0 OR used_count<max_uses)`)
+        .run(promo.id);
+      if (!claimed.changes) throw new ApiError(409, 'PROMO_LIMIT_REACHED', 'Лимит активаций исчерпан');
+      try {
+        db.prepare('INSERT INTO promo_redemptions(promo_id,user_id,created_at) VALUES(?,?,?)').run(promo.id, account.id, now);
+      } catch {
+        throw new ApiError(409, 'PROMO_ALREADY_USED', 'Вы уже использовали этот промокод');
+      }
+      const credited = db.prepare('UPDATE users SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(promo.amount_cents, now, account.id);
+      if (!credited.changes) throw new ApiError(404, 'ACCOUNT_NOT_FOUND', 'Аккаунт не найден');
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(account.id).balance_cents;
       recordTransaction(account.id, 'promo', promo.amount_cents, balance, code, now);
-      return { amountCents: promo.amount_cents, balanceCents: balance };
-    })();
-    res.json({ ok: true, ...result });
+      return { ok: true, amountCents: promo.amount_cents, balanceCents: balance };
+    }, { cooldown: 500 });
+    sendOperationResult(res, result);
   } catch (error) {
-    res.status(400).json({ error: error.message || 'Не удалось активировать промокод' });
+    sendApiError(res, error, 'Не удалось активировать промокод');
   }
 });
 
@@ -2554,15 +2665,28 @@ app.post('/api/admin/users/:id/balance', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const amount = Math.round(Number(req.body?.amountCents));
   const note = String(req.body?.note || 'Корректировка баланса').slice(0, 200);
-  if (!Number.isSafeInteger(amount) || amount === 0) return res.status(400).json({ error: 'Укажите сумму' });
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  const next = Number(user.balance_cents) + amount;
-  if (next < 0) return res.status(400).json({ error: 'Баланс не может быть отрицательным' });
-  db.prepare('UPDATE users SET balance_cents = ?, updated_at = ? WHERE id = ?').run(next, Date.now(), id);
-  recordTransaction(id, amount > 0 ? 'admin_credit' : 'admin_debit', amount, next, note);
-  adminLog(req.account, 'balance', user.name, `${amount > 0 ? '+' : ''}${(amount / 100).toFixed(2)} — ${note}`);
-  res.json({ ok: true, balanceCents: next });
+  if (!Number.isSafeInteger(id) || !Number.isSafeInteger(amount) || amount === 0 || Math.abs(amount) > 100_000_000_000) {
+    return res.status(422).json({ error: 'Укажите корректную сумму', code: 'BALANCE_ADJUSTMENT_INVALID' });
+  }
+  let audit = null;
+  try {
+    const result = operations.run(req, req.account.id, `admin_balance:${id}`, ({ now }) => {
+      const user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+      if (!user) throw new ApiError(404, 'USER_NOT_FOUND', 'Пользователь не найден');
+      const changed = amount > 0
+        ? db.prepare('UPDATE users SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(amount, now, id)
+        : db.prepare('UPDATE users SET balance_cents=balance_cents+?,updated_at=? WHERE id=? AND balance_cents>=?').run(amount, now, id, Math.abs(amount));
+      if (!changed.changes) throw new ApiError(422, 'BALANCE_INSUFFICIENT', 'Баланс не может быть отрицательным');
+      const balance = db.prepare('SELECT balance_cents FROM users WHERE id=?').get(id).balance_cents;
+      recordTransaction(id, amount > 0 ? 'admin_credit' : 'admin_debit', amount, balance, note, now);
+      audit = { name: user.name, details: `${amount > 0 ? '+' : ''}${(amount / 100).toFixed(2)} — ${note}` };
+      return { ok: true, balanceCents: balance };
+    }, { cooldown: 300 });
+    if (!result.replayed && audit) adminLog(req.account, 'balance', audit.name, audit.details);
+    sendOperationResult(res, result);
+  } catch (error) {
+    sendApiError(res, error, 'Не удалось изменить баланс');
+  }
 });
 
 app.post('/api/admin/users/:id/ban', requireAdmin, (req, res) => {
@@ -2606,12 +2730,22 @@ app.post('/api/admin/users/:id/luck', requireAdmin, (req, res) => {
 app.post('/api/admin/users/:id/give', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const item = CATALOG_BY_ID.get(String(req.body?.catalogId || ''));
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (!item) return res.status(404).json({ error: 'Предмет не найден в каталоге' });
-  const inventoryId = insertInventoryItem(id, item, 'admin');
-  adminLog(req.account, 'give_item', user.name, item.name);
-  res.json({ ok: true, inventoryId });
+  if (!Number.isSafeInteger(id)) return res.status(422).json({ error: 'Некорректный пользователь', code: 'USER_INVALID' });
+  if (!item) return res.status(404).json({ error: 'Предмет не найден в каталоге', code: 'CATALOG_ITEM_NOT_FOUND' });
+  let audit = null;
+  try {
+    const result = operations.run(req, req.account.id, `admin_give:${id}`, ({ now }) => {
+      const user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+      if (!user) throw new ApiError(404, 'USER_NOT_FOUND', 'Пользователь не найден');
+      const inventoryId = insertInventoryItem(id, item, 'admin', now);
+      audit = { name: user.name, item: item.name };
+      return { ok: true, inventoryId };
+    }, { cooldown: 300 });
+    if (!result.replayed && audit) adminLog(req.account, 'give_item', audit.name, audit.item);
+    sendOperationResult(res, result);
+  } catch (error) {
+    sendApiError(res, error, 'Не удалось выдать предмет');
+  }
 });
 
 app.get('/api/admin/transactions', requireAdmin, (req, res) => {
@@ -2694,6 +2828,12 @@ app.post('/api/admin/cases/upload', requireAdmin, (req, res) => {
     if (buffer.length > 4 * 1024 * 1024) return res.status(400).json({ error: 'Файл слишком большой (макс 4MB)' });
     const ext = path.extname(filename).toLowerCase();
     if (!['.png','.jpg','.jpeg','.webp'].includes(ext)) return res.status(400).json({ error: 'Разрешены только png/jpg/webp' });
+    const png = buffer.length > 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const jpeg = buffer.length > 3 && buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255;
+    const webp = buffer.length > 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+    if ((ext === '.png' && !png) || (['.jpg', '.jpeg'].includes(ext) && !jpeg) || (ext === '.webp' && !webp)) {
+      return res.status(422).json({ error: 'Содержимое файла не соответствует формату', code: 'IMAGE_FORMAT_INVALID' });
+    }
     ensureCasesDir();
     const safeName = filename.replace(/[^a-z0-9_.-]/gi, '_');
     const fullPath = path.join(__dirname, 'static', 'cases', safeName);
@@ -2725,11 +2865,13 @@ function validateCaseInput(body) {
   const id = String(body.id || body.caseId || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
   const name = String(body.name || '').trim().slice(0, 80);
   const description = String(body.description || '').trim().slice(0, 300);
-  const priceCents = Math.max(0, Math.round(Number(body.priceCents || 0)));
+  const rawPrice = Math.round(Number(body.priceCents || 0));
+  const priceCents = Number.isSafeInteger(rawPrice) ? Math.max(0, rawPrice) : -1;
   const once = body.once ? 1 : 0;
   const enabled = body.enabled === undefined ? 1 : (body.enabled ? 1 : 0);
   const image = String(body.image || '').trim().slice(0, 300);
-  const max_openings = Math.max(0, Math.round(Number(body.max_openings || body.maxOpenings || 0)));
+  const rawMaxOpenings = Math.round(Number(body.max_openings || body.maxOpenings || 0));
+  const max_openings = Number.isSafeInteger(rawMaxOpenings) ? Math.max(0, rawMaxOpenings) : -1;
   const level_min = Math.max(0, Math.round(Number(body.level_min || body.levelMin || 0)));
   const starts_at = body.starts_at || body.startsAt ? Number(body.starts_at || body.startsAt) : null;
   const ends_at = body.ends_at || body.endsAt ? Number(body.ends_at || body.endsAt) : null;
@@ -2750,6 +2892,9 @@ function validateCaseInput(body) {
   }
   if (!id) return { error: 'Укажите ID кейса (латиница, цифры, -, _)' };
   if (!name) return { error: 'Укажите название кейса' };
+  if (priceCents < 0 || priceCents > 1_000_000_000) return { error: 'Укажите корректную цену кейса' };
+  if (max_openings < 0 || max_openings > 1_000_000_000) return { error: 'Укажите корректный лимит открытий' };
+  if (image && !/^\/(static|cases)\/[a-z0-9_./-]+$/i.test(image) && !/^https:\/\/[a-z0-9.-]*steamstatic\.com\//i.test(image)) return { error: 'Недопустимый URL обложки' };
   if (cleanContents.length === 0) return { error: 'Добавьте хотя бы 1 предмет с весом' };
   if (totalWeight <= 0) return { error: 'Сумма весов должна быть >0' };
   return { id, name, description, priceCents, once, enabled, image, max_openings, level_min, starts_at, ends_at, discount_percent, contents: cleanContents };
@@ -3622,14 +3767,16 @@ app.post('/api/admin/users/:id/revoke', requireAdmin, (req, res) => {
   if (!Number.isSafeInteger(id) || !Number.isSafeInteger(itemId)) return res.status(400).json({ error: 'Предмет не найден' });
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  const item = db.prepare("SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'").get(itemId, id);
-  if (!item) return res.status(404).json({ error: 'Активный предмет не найден' });
-  db.prepare("UPDATE site_inventory SET status = 'revoked', updated_at = ? WHERE id = ?").run(Date.now(), itemId);
-  adminLog(req.account, 'item_revoke', user.name, item.item_name);
+  const result = db.transaction(() => {
+    const changed = db.prepare("UPDATE site_inventory SET status='REVOKED',updated_at=? WHERE id=? AND user_id=? AND status='AVAILABLE'").run(Date.now(), itemId, id);
+    if (!changed.changes) throw new ApiError(409, 'ITEM_UNAVAILABLE', 'Активный предмет не найден');
+    return db.prepare('SELECT item_name FROM site_inventory WHERE id=? AND user_id=?').get(itemId, id);
+  })();
+  adminLog(req.account, 'item_revoke', user.name, result.item_name);
   res.json({ ok: true });
   } catch (e) {
     console.error('[revoke]', e);
-    if (!res.headersSent) res.status(500).json({ error: e.message || 'Ошибка' });
+    if (!res.headersSent) sendApiError(res, e, 'Не удалось отозвать предмет');
   }
 });
 
@@ -3699,7 +3846,7 @@ app.use((req, res) => {
   if (path.extname(req.path) || base.startsWith('.')) {
     return res.status(404).send('Not found');
   }
-  res.sendFile(path.join(__dirname, 'index.html'));
+  sendHtmlDocument(res, 'index.html');
 });
 
 app.use((error, req, res, _next) => {

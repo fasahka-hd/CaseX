@@ -43,7 +43,7 @@ server = server.slice(0, startIdx) + defaultCasesBlock + server.slice(endIdx + e
 fs.writeFileSync(serverPath, server);
 console.log('[catalog] server.js обновлён (DEFAULT_CASES)');
 
-const spaPath = path.join(ROOT, 'static', 'js', 'angabpkp3gxhj0duqmqa.js');
+const spaPath = path.join(ROOT, 'static', 'js', 'app.js');
 let spa = fs.readFileSync(spaPath, 'utf8');
 
 const begin = 'const CASE_SHOP_SECTIONS = ';
