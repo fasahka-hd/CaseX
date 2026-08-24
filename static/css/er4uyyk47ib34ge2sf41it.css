@@ -75,3 +75,28 @@ img.best-empty-img{opacity:.55!important}
 @media(max-width:1023px){#toast-root{left:0;right:0;top:5rem;padding:0 .8rem}#toast-root .toast{max-width:100%;width:100%}}
 .notifications-overlay,.payment-overlay,.settings-overlay,.result-overlay,.auth-consent-overlay,.frozen-account{z-index:999920!important}
 #toast-root{z-index:999999!important}
+
+.cx-reveal .result-card{position:relative;padding-top:30px}
+.cx-reveal-x{position:absolute;top:10px;right:12px;width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(255,255,255,.05);color:#c5cbc8;font-size:20px;line-height:1;cursor:pointer;transition:color .15s ease,border-color .15s ease}
+.cx-reveal-x:hover{color:#fff;border-color:rgba(255,255,255,.3)}
+.cx-reveal .result-badge{display:none}
+.cx-reveal h2{margin-top:4px}
+.cx-reveal .result-item{margin-bottom:18px}
+.cx-reveal-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cx-reveal-actions button{height:40px;border-radius:7px;font-size:11.5px;font-weight:800;letter-spacing:.4px;cursor:pointer;transition:filter .15s ease,transform .12s ease;padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cx-reveal-sell{grid-column:1}
+.cx-reveal-upgrade{grid-column:2}
+.cx-reveal-keep{grid-column:1/-1}
+.cx-reveal-actions button:active{transform:scale(.97)}
+.cx-reveal-sell{background:linear-gradient(180deg,rgba(68,201,135,.55),rgba(68,201,135,.25));border:1px solid #5dcca2;color:#8cffcf}
+.cx-reveal-sell:hover{filter:brightness(1.12)}
+.cx-reveal-upgrade{background:linear-gradient(180deg,rgba(16,117,224,.55),rgba(16,117,224,.22));border:1px solid rgba(86,168,255,.55);color:#cfe6ff}
+.cx-reveal-upgrade:hover{filter:brightness(1.12)}
+.cx-reveal-keep{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);color:#c5cbc8}
+.cx-reveal-keep:hover{color:#fff;border-color:rgba(255,255,255,.28)}
+
+.cx-upgrade-locked .source-col .panel,
+.cx-upgrade-locked .target-col .panel,
+.cx-upgrade-locked .add-balance-bar,
+.cx-upgrade-locked .boost-row{pointer-events:none;opacity:.55;transition:opacity .2s ease}
+.cx-upgrade-locked-lists .upgrade-list-panel{pointer-events:none;opacity:.55;transition:opacity .2s ease}

@@ -547,6 +547,37 @@ async function fetchSteamPrice(marketHashName) {
   if (!marketHashName) return 0;
   return await fetchSteamPriceSingle(marketHashName);
 }
+function promiseWithTimeout(promise, ms, fallbackValue = 0) {
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve(fallbackValue), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([
+    promise.then(value => { clearTimeout(timer); return value; })
+      .catch(() => { clearTimeout(timer); return fallbackValue; }),
+    timeout
+  ]);
+}
+async function resolveTargetPrice(item, timeoutMs = 8000) {
+  for (const marketName of getMarketNamesForItem(item)) {
+    const cached = cachedSteamPrice(marketName, 30 * 60 * 1000);
+    if (cached.hit && cached.price > 0) {
+      if (item) { item.priceCents = cached.price; item._isEstimated = false; }
+      return cached.price;
+    }
+  }
+  const live = await promiseWithTimeout(refreshCatalogItemPrice(item, true), timeoutMs, 0);
+  if (live > 0) return live;
+  for (const marketName of getMarketNamesForItem(item)) {
+    const cachedRow = cachedSteamPrice(marketName, 0);
+    if (cachedRow.price > 0) {
+      if (item) { item.priceCents = cachedRow.price; item._isEstimated = false; }
+      return cachedRow.price;
+    }
+  }
+  return Number(item.priceCents) > 0 ? Number(item.priceCents) : 0;
+}
 function cachedSteamPrice(marketHashName, maxAgeMs = 30 * 60 * 1000) {
   try {
     const row = db.prepare('SELECT lowest_price, median_price, updated_at FROM steam_prices WHERE market_hash_name = ?').get(marketHashName);
@@ -673,6 +704,9 @@ async function buildFullCatalog() {
           console.warn('[prices] Рабочих прокси не найдено — автоматическая полная загрузка цен пропущена. Добавьте приватные прокси или запустите обновление вручную.');
           return;
         }
+      } else if (!proxyCount) {
+        console.warn('[prices] Прокси не настроены — автоматическая полная загрузка цен пропущена (Steam забанит один IP). Цены обновляются по мере запросов; для полной загрузки добавьте прокси в data/proxies.txt.');
+        return;
       }
     } catch (error) {
       console.warn('[prices] Проверка прокси не завершена:', error.message);
@@ -2139,9 +2173,9 @@ app.post('/api/catalog/:id/refresh-price', async (req, res) => {
   const item = CATALOG_BY_ID.get(String(req.params.id || ''));
   if (!item) return res.status(404).json({ error: 'Предмет не найден' });
   try {
-    const price = await refreshCatalogItemPrice(item, true);
-    if (!price) return res.status(503).json({ error: 'Steam временно не вернул цену' });
-    res.json({ item: publicCatalogItem(item) });
+    const price = await resolveTargetPrice(item, 2500);
+    if (!price) return res.status(503).json({ error: 'Цена предмета временно недоступна' });
+    res.json({ item: publicCatalogItem({ ...item, priceCents: price }) });
   } catch (error) {
     res.status(503).json({ error: error.message || 'Не удалось обновить цену' });
   }
@@ -2272,8 +2306,8 @@ app.post('/api/upgrade', async (req, res) => {
   if (!Number.isSafeInteger(addBalanceCents) || addBalanceCents < 0) return res.status(400).json({ error: 'Недопустимая сумма из баланса' });
 
   try {
-    const liveTargetPrice = await refreshCatalogItemPrice(target, true);
-    if (!liveTargetPrice) throw new Error('Steam временно не вернул актуальную цену цели');
+    const targetPriceCents = Math.max(1, Math.floor(Number(target.priceCents) || 0));
+    if (!(targetPriceCents > 1)) throw new Error('Не удалось получить цену цели, попробуйте ещё раз');
     const result = db.transaction(() => {
       const from = db.prepare(`
         SELECT * FROM site_inventory WHERE id = ? AND user_id = ? AND status = 'active'
@@ -2281,11 +2315,12 @@ app.post('/api/upgrade', async (req, res) => {
       if (!from) throw new Error('Исходный предмет уже недоступен');
       if (addBalanceCents > Number(account.balance_cents || 0)) throw new Error('Недостаточно средств на балансе');
       const totalValue = Number(from.price_cents) + addBalanceCents;
+      if (!(totalValue > 0)) throw new Error('Ставка должна быть больше нуля');
 
       const minTarget = boostPercent >= 100
         ? Math.ceil(totalValue * boostPercent / 100)
         : Math.ceil(totalValue * 100 / boostPercent);
-      if (Number(target.priceCents) < minTarget) {
+      if (targetPriceCents < Math.floor(minTarget * 0.98)) {
         throw new Error('Цель не соответствует выбранному проценту апгрейда');
       }
 
@@ -2302,19 +2337,21 @@ app.post('/api/upgrade', async (req, res) => {
         const after = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(account.id).balance_cents;
         recordTransaction(account.id, 'upgrade_stake', -addBalanceCents, after, 'Ставка в апгрейде');
       }
-      const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / target.priceCents * 10000) / 100));
+      const baseChance = Math.min(100, Math.max(0, Math.floor(totalValue / targetPriceCents * 10000) / 100));
       const luck = Math.max(-90, Math.min(300, settingGet('upgrade_luck', 0) + Number(account.luck_modifier || 0)));
       const effectiveChance = Math.min(100, Math.max(0, baseChance * (1 + luck / 100)));
       const chance = Math.round(effectiveChance * 100) / 100;
       const roll = crypto.randomInt(0, 1000000) / 10000;
       const won = roll < effectiveChance;
       const now = Date.now();
-      db.prepare("UPDATE site_inventory SET status = 'used', updated_at = ? WHERE id = ?").run(now, fromId);
+      const consumed = db.prepare("UPDATE site_inventory SET status = 'used', updated_at = ? WHERE id = ? AND status = 'active'").run(now, fromId);
+      if (!consumed.changes) throw new Error('Исходный предмет уже недоступен');
       let resultItemId = null;
       let drop = null;
       if (won) {
-        resultItemId = insertInventoryItem(account.id, target, `upgrade:${fromId}`, now);
-        drop = addLiveDrop(account.id, account.name, target, 'upgrade', now);
+        const awarded = { ...target, priceCents: targetPriceCents };
+        resultItemId = insertInventoryItem(account.id, awarded, `upgrade:${fromId}`, now);
+        drop = addLiveDrop(account.id, account.name, awarded, 'upgrade', now);
       }
       db.prepare(`
         INSERT INTO upgrade_rounds(user_id,from_item_id,target_catalog_id,chance,won,result_item_id,created_at)
@@ -2326,7 +2363,7 @@ app.post('/api/upgrade', async (req, res) => {
         boostPercent,
         addBalanceCents,
         roll: Math.floor(roll * 100) / 100,
-        item: won ? withSteamIcon({ ...target, assetid: String(resultItemId) }) : null,
+        item: won ? withSteamIcon({ ...target, priceCents: targetPriceCents, assetid: String(resultItemId) }) : null,
         drop
       };
     })();

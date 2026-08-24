@@ -154,7 +154,19 @@ function chevronIcon() {
 }
 
 async function api(url, options) {
-  const response = await fetch(url, options);
+  const opts = { ...(options || {}) };
+  if (!opts.signal && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    opts.signal = AbortSignal.timeout(30000);
+  }
+  let response;
+  try {
+    response = await fetch(url, opts);
+  } catch (error) {
+    if (error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw Error('Сервер долго не отвечает, попробуйте ещё раз');
+    }
+    throw error;
+  }
   const json = await response.json().catch(() => ({}));
   if (!response.ok) throw Error(json.error || `HTTP ${response.status}`);
   return json;
@@ -335,7 +347,9 @@ function sideItem(item) {
 
 function sidebar() {
   const feed = (S.drops && S.drops.length) ? S.drops : ((S.inventoryFeed && S.inventoryFeed.length) ? S.inventoryFeed : S.inventory);
-  const items = S.tab === 'hot' ? feed.filter(item => Number(item.rarityRank) >= 4) : feed;
+  const filtered = S.tab === 'hot' ? feed.filter(item => Number(item.rarityRank) >= 4) : feed;
+  const fitCount = Math.max(4, Math.floor((window.innerHeight - 150) / 99));
+  const items = filtered.slice(0, fitCount);
   return `<aside class="sidebar">
     <div class="side-head">
       <div class="site-online">
@@ -427,7 +441,7 @@ function upgradePage() {
   const turboLabel = turboOn ? 'Быстрый режим включён' : 'Быстрый режим выключен';
   const fromLabel = S.from ? `${money(S.from.priceCents)}${S.addBalance ? ` + ${money(S.addBalance)}` : ''}` : '';
   const leftEmpty = '<div class="selected-big empty">Выбранный предмет появится здесь</div>';
-  return `<section class="upgrid">
+  return `<section class="upgrid${S.spinning ? ' cx-upgrade-locked' : ''}">
       <div class="source-col">
         <div class="panel-tools">
           <button type="button" class="turbo-toggle ${turboOn ? 'active' : ''}" aria-label="${turboLabel}" aria-pressed="${turboOn}" title="${turboLabel}" onclick="toggleTurbo()">${turboIcon(turboOn)}</button>
@@ -439,7 +453,7 @@ function upgradePage() {
         <div class="add-balance-bar">
           <div class="add-balance-title"><img class="add-balance-coin" src="/chunks/coin.svg" alt=""><span>Добавить баланс</span></div>
           <div class="add-balance-mid"><div class="ab-value"><b>${money(S.addBalance)}</b></div>
-            <input class="add-balance-range" type="range" min="0" max="${balanceR}" step="0.01" value="${addR}" style="--range-progress:${rangeProgress}%" oninput="setAddBalance(this.value)" ${balanceCents > 0 ? '' : 'disabled'}>
+            <input class="add-balance-range" type="range" min="0" max="${balanceR}" step="0.01" value="${addR}" style="--range-progress:calc(7px + (100% - 14px) * ${(rangeProgress / 100).toFixed(4)})" oninput="setAddBalance(this.value)" ${balanceCents > 0 ? '' : 'disabled'}>
           </div>
           <div class="add-balance-max"><span>Макс.</span><div><b>${money(balanceCents)}</b></div></div>
         </div>
@@ -465,7 +479,7 @@ function upgradePage() {
         <div class="boost-row"><div class="boost-label">УВЕЛИЧИТЬ СТОИМОСТЬ ЦЕЛИ</div><div class="boost-buttons">${boostButtons}</div></div>
       </div>
     </section>
-    <section class="lower upgrade-lists">
+    <section class="lower upgrade-lists${S.spinning ? ' cx-upgrade-locked-lists' : ''}">
       <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/inventary.svg" alt=""><b>МОИ ПРЕДМЕТЫ</b></div></div><div class="upgrade-list-body">${inventory.length ? `<div class="grid upgrade-items-grid">${inventory.map(item => skinCard(item, { button: true, onclick: `choose('${item.assetid}','from')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Ваш инвентарь пуст</strong><span>Открой свой первый кейс</span><button onclick="go(\'cases\')"><img src="/chunks/cases.svg" alt="">ОТКРЫТЬ КЕЙС</button></div>'}</div></div>
       <div class="panel upgrade-list-panel"><div class="upgrade-list-head"><div><img src="/chunks/upgrade.svg" alt=""><b>ВЫБРАТЬ ПРЕДМЕТ</b></div><div class="target-filters"><input id="target-min" value="${esc(S.targetMin)}" placeholder="От" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-max" value="${esc(S.targetMax)}" placeholder="До" inputmode="decimal" oninput="applyTargetFilters()"><input id="target-search" value="${esc(S.targetSearch)}" placeholder="Поиск" oninput="applyTargetFilters()"><button onclick="applyTargetFilters()" aria-label="Поиск">⌕</button></div></div><div class="upgrade-list-body">${pageTargets.length ? `<div class="grid upgrade-items-grid target-items-grid">${pageTargets.map(item => skinCard(item, { button: true, onclick: `choose('${item.catalogId}','to')` })).join('')}</div>` : '<div class="upgrade-list-empty"><strong>Предметы не найдены</strong><span>Измените фильтры или выберите исходный предмет</span></div>'}${pageCount > 1 ? `<div class="target-pager"><button ${S.targetPage <= 1 ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage - 1})" aria-label="Предыдущая страница">‹</button><button ${S.targetPage >= pageCount ? 'disabled' : ''} onclick="setTargetPage(${S.targetPage + 1})" aria-label="Следующая страница">›</button></div>` : ''}</div></div>
     </section>`;
@@ -524,22 +538,23 @@ async function sellSelectedItems() {
   render();
   toast(sold ? `Продано: ${sold} шт. на ${money(amount)}` : 'Не удалось продать', sold ? 'success' : 'error');
 }
-function cxSellAllBar() {
-  if (!S.sellAllConfirm) return '';
-  const total = S.inventory.reduce((s, it) => s + Number(it.priceCents || 0), 0);
-  const cnt = S.inventory.length;
-  return `<div class="cx-sell-all-confirm">
-    <span>Продать все предметы (<b>${cnt}</b> шт.) и получить <b>${coinPrice(total)}</b>?</span>
-    <button class="cx-sa-cancel" onclick="cxCancelSellAll()">ОТМЕНА</button>
-    <button class="cx-sa-ok" onclick="cxDoSellAll()">ПОДТВЕРДИТЬ</button>
-  </div>`;
-}
-function cxAskSellAll() {
+function cxSellAllBar() { return ''; }
+async function cxAskSellAll() {
   if (!S.inventory.length) return toast('Инвентарь пуст', 'error');
-  S.sellAllConfirm = true;
   S.sellMode = false;
   S.sellSelected.clear();
-  render();
+  const total = S.inventory.reduce((sum, it) => sum + Number(it.priceCents || 0), 0);
+  const cnt = S.inventory.length;
+  let ok = false;
+  if (typeof window.customConfirm === 'function') {
+    ok = await window.customConfirm(
+      `Будет продано ${cnt} шт. на сумму ${money(total)}. Средства сразу зачислятся на баланс.`,
+      { title: 'Продать все предметы?', confirmText: `ПРОДАТЬ ЗА ${money(total)}`, cancelText: 'ОТМЕНА' }
+    );
+  } else {
+    ok = window.confirm(`Продать все предметы (${cnt} шт.) за ${money(total)}?`);
+  }
+  if (ok) cxDoSellAll();
 }
 function cxCancelSellAll() { S.sellAllConfirm = false; render(); }
 async function cxDoSellAll() {
@@ -573,8 +588,10 @@ function caseIcon(caseData, large = false) {
 function playCaseDrop() {
   const fx = document.getElementById('cx-case-drop-fx');
   const src = document.querySelector('.case-detail .case-visual img');
-  if (S.page !== 'case' || !S.activeCase) {
+  if (S.page !== 'case' || !S.activeCase || S.opening || S.rouletteItems.length) {
     if (fx) fx.remove();
+    if (src) src.style.visibility = '';
+    if (S.opening || S.rouletteItems.length) caseDropFor = S.activeCase;
     return;
   }
   if (fx) {
@@ -856,8 +873,12 @@ function caseDetailPage() {
   const buyBlock = S.caseResult ? '' : buyButton;
   const roulette = S.rouletteItems.length ? `<div class="case-roulette"><i class="roulette-pointer"></i><div class="case-roll-track">${S.rouletteItems.map(rouletteCard).join('')}</div></div>` : '';
   const result = S.caseResult && !S.caseReveal ? `<div class="case-result cx-result-clean"><span>ВЫПАЛО</span>${skinCard(S.caseResult, { className: 'case-result-item' })}<button class="cx-res-up" onclick="sendToUpgrade('${S.caseResult.assetid}')">В АПГРЕЙД</button><button class="cx-res-inv" onclick="openInventory()">В ИНВЕНТАРЬ</button></div>` : '';
+  const caseTurboLabel = S.turbo ? 'Быстрое открытие включено' : 'Быстрое открытие выключено';
   return `<button class="case-back" onclick="go('cases')">← ВСЕ КЕЙСЫ</button>
     <section class="case-detail ${spinning ? 'cx-case-spinning' : ''}">
+      <div class="panel-tools case-tools" style="position:absolute;top:14px;right:14px;z-index:6">
+        <button type="button" class="turbo-toggle ${S.turbo ? 'active' : ''}" aria-label="${caseTurboLabel}" aria-pressed="${S.turbo}" title="${caseTurboLabel}" ${S.opening ? 'disabled' : ''} onclick="toggleTurbo()">${turboIcon(S.turbo)}</button>
+      </div>
       <h1>${esc(caseData.name)}</h1>${caseVisual}
       ${buyBlock}
       ${roulette}${result}
@@ -1271,6 +1292,7 @@ function render() {
   syncCaseBackdrop();
   syncSidebarToggle();
   playCaseDrop();
+  syncAddBalanceRange();
   if (S.chat) loadChat();
 }
 
@@ -1382,6 +1404,7 @@ function upgradeTargets() {
   return S.catalog.filter(item => item.priceCents >= minimum).sort((a, b) => a.priceCents - b.priceCents);
 }
 async function choose(id, side) {
+  if (S.spinning) return;
   const item = side === 'from'
     ? S.inventory.find(value => String(value.assetid) === String(id))
     : S.catalog.find(value => String(value.catalogId) === String(id));
@@ -1396,42 +1419,44 @@ async function choose(id, side) {
   S.to = item;
   recalculateChance();
   render();
-  try {
-    const result = await api(`/api/catalog/${encodeURIComponent(item.catalogId)}/refresh-price`, { method: 'POST' });
-    if (result?.item) Object.assign(item, result.item);
-    const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
-    if (Number(item.priceCents) < minimum) {
-      S.to = null;
-      toast('После обновления цены цель не соответствует проценту апгрейда', 'error');
-    }
-    recalculateChance();
-    render();
-  } catch (error) {
-    S.to = null;
-    recalculateChance();
-    render();
-    toast(error.message, 'error');
-  }
 }
 function setBoost(value, shouldRender = true) {
+  if (S.spinning) return;
   S.boost = Number(value);
   S.targetPage = 1;
   const targets = upgradeTargets();
-  const keep = S.to && targets.some(item => String(item.catalogId) === String(S.to.catalogId));
-  if (!keep) S.to = targets[0] || null;
+  S.to = targets[0] || null;
   recalculateChance();
   if (shouldRender) render();
 }
 function setAddBalance(value) {
-  const balanceCents = Number(S.me.user.balanceCents || 0);
+  if (S.spinning) return;
+  const balanceCents = Number(S.me?.user?.balanceCents || 0);
   S.addBalance = Math.round(Math.min(Math.max(Number(value) || 0, 0), balanceCents / 100) * 100);
   S.targetPage = 1;
-  if (S.to) {
+  if (S.from && S.to) {
     const minimum = boostMinimumPrice(upgradeBaseValue(), S.boost);
-    if (Number(S.to.priceCents) < minimum) S.to = null;
+    if (Number(S.to.priceCents) < minimum) {
+      const targets = upgradeTargets();
+      S.to = targets[0] || null;
+    }
   }
   recalculateChance();
   render();
+  syncAddBalanceRange();
+}
+function syncAddBalanceRange() {
+  const input = document.querySelector('.add-balance-range');
+  if (!input) return;
+  const balanceCents = Number(S.me?.user?.balanceCents || 0);
+  const maxValue = (balanceCents / 100).toFixed(2);
+  if (input.max !== maxValue) input.max = maxValue;
+  const stateValue = (S.addBalance / 100).toFixed(2);
+  if (document.activeElement !== input && input.value !== stateValue) input.value = stateValue;
+  const max = Number(input.max) || 0;
+  const val = Math.min(Math.max(Number(input.value) || 0, 0), max);
+  const ratio = max > 0 ? val / max : 0;
+  input.style.setProperty('--range-progress', `calc(7px + (100% - 14px) * ${ratio.toFixed(4)})`);
 }
 function applyTargetFilters() {
   const active = document.activeElement;
@@ -1521,7 +1546,9 @@ async function openCase(caseId) {
   if (!caseData) return;
   S.opening = caseId;
   S.caseResult = null;
+  S.caseReveal = false;
   S.rouletteItems = [];
+  S._dropLock = 0;
   render();
   const detail = document.querySelector('.case-detail');
   if (detail) detail.classList.add('cx-case-spinning');
@@ -1529,19 +1556,38 @@ async function openCase(caseId) {
     const result = await api('/api/cases/open', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId })
     });
+    if (typeof result.balanceCents === 'number' && S.me?.user) {
+      S.me.user.balanceCents = result.balanceCents;
+    }
     S.rouletteItems = buildRoulette(caseData, result.item);
     render();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
-      const track = document.querySelector('.case-roll-track');
-      const viewport = document.querySelector('.case-roulette');
-      if (track && viewport) {
-        const stop = 41 * 178 - viewport.clientWidth / 2 + 84;
-        track.style.transform = `translate3d(-${Math.max(0, stop)}px,0,0)`;
-        track.classList.add('rolling');
-      }
-      setTimeout(resolve, 6400);
-    })));
-    await refreshAccount();
+    const spinMs = S.turbo ? 1300 : 6400;
+    await new Promise(resolve => {
+      let started = false;
+      let finished = false;
+      const finish = () => { if (!finished) { finished = true; resolve(); } };
+      const start = () => {
+        if (started) return;
+        started = true;
+        const track = document.querySelector('.case-roll-track');
+        const viewport = document.querySelector('.case-roulette');
+        if (track && viewport) {
+          const cards = track.children;
+          const pitch = cards.length > 1 ? (cards[1].offsetLeft - cards[0].offsetLeft) : 178;
+          const cardWidth = cards.length ? cards[0].offsetWidth : 168;
+          const stop = 41 * pitch - viewport.clientWidth / 2 + cardWidth / 2;
+          if (S.turbo) track.style.setProperty('transition', 'transform 1.1s cubic-bezier(.1,.65,.1,1)', 'important');
+          track.style.transform = `translate3d(-${Math.max(0, stop)}px,0,0)`;
+          track.classList.add('rolling');
+          setTimeout(finish, spinMs);
+        } else {
+          finish();
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(start));
+      setTimeout(start, 350);
+    });
+    try { await refreshAccount(); } catch (_) {}
     S.rouletteItems = [];
     S.caseResult = result.item;
     S.caseReveal = true;
@@ -1552,9 +1598,6 @@ async function openCase(caseId) {
     if (detail) detail.classList.remove('cx-case-spinning');
     S.opening = null;
     render();
-    if (S.caseReveal) {
-      setTimeout(() => { if (S.caseReveal) { S.caseReveal = false; render(); } }, 6000);
-    }
   }
 }
 
@@ -1569,13 +1612,14 @@ function applyPointerAngle(deg) {
 
 function startPointerSpin() {
   if (pointerRaf) cancelAnimationFrame(pointerRaf);
-  let last = performance.now();
+  const t0 = performance.now();
+  let last = t0;
   const step = now => {
     if (!S.spinning) { pointerRaf = null; return; }
     const dt = Math.min(64, now - last);
     last = now;
-
-    pointerCurrent += dt * 0.54;
+    const ramp = Math.min(1, (now - t0) / 200);
+    pointerCurrent += dt * (0.35 + 0.75 * ramp);
     applyPointerAngle(pointerCurrent);
     pointerRaf = requestAnimationFrame(step);
   };
@@ -1611,17 +1655,25 @@ function spinPointerTo(total, duration = 2400) {
     const delta = total - start;
     const t0 = performance.now();
     const ease = t => 1 - Math.pow(1 - t, 3);
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (pointerRaf) cancelAnimationFrame(pointerRaf);
+      pointerRaf = null;
+      pointerCurrent = total;
+      applyPointerAngle(pointerCurrent);
+      clearTimeout(guard);
+      resolve();
+    };
+    const guard = setTimeout(finish, duration + 200);
     const step = now => {
+      if (finished) return;
       const t = Math.min(1, (now - t0) / duration);
       pointerCurrent = start + delta * ease(t);
       applyPointerAngle(pointerCurrent);
       if (t < 1) pointerRaf = requestAnimationFrame(step);
-      else {
-        pointerCurrent = total;
-        applyPointerAngle(pointerCurrent);
-        pointerRaf = null;
-        resolve();
-      }
+      else finish();
     };
     pointerRaf = requestAnimationFrame(step);
   });
@@ -1637,6 +1689,11 @@ async function upgrade() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fromAssetId: S.from.assetid, toCatalogId: S.to.catalogId, boostPercent: S.boost, addBalanceCents: S.addBalance })
     });
+    if (result.addBalanceCents > 0 && S.me?.user) {
+      S.me.user.balanceCents = Math.max(0, Number(S.me.user.balanceCents || 0) - result.addBalanceCents);
+      const balEl = document.querySelector('.header-balance b');
+      if (balEl) balEl.innerHTML = coinPrice(S.me.user.balanceCents);
+    }
 
     S.chance = clampChance(result.chance);
     const wheelEl = document.querySelector('.wheel');
@@ -1650,10 +1707,10 @@ async function upgrade() {
     if (headEl) headEl.textContent = formatChance(S.chance);
     const centerEl = document.querySelector('.wheelcenter strong');
     if (centerEl) centerEl.textContent = formatChance(S.chance);
-    await new Promise(resolve => setTimeout(resolve, S.turbo ? 60 : 900));
+    await new Promise(resolve => setTimeout(resolve, S.turbo ? 60 : 300));
     const total = pointerLanding(!!result.won, result.chance);
-    await spinPointerTo(total, S.turbo ? 360 : 4200);
-    await refreshAccount();
+    await spinPointerTo(total, S.turbo ? 360 : 3600);
+    try { await refreshAccount(); } catch (_) {}
     S.upgradeResult = {
       won: !!result.won,
       item: result.item || null,
@@ -1708,21 +1765,48 @@ function resultItemBlock(item) {
 function caseRevealOverlay() {
   if (!S.caseReveal || !S.caseResult) return '';
   const item = S.caseResult;
-  return `<div class="result-overlay win" role="dialog" aria-modal="true" aria-label="Выпал предмет">
+  return `<div class="result-overlay win cx-reveal" role="dialog" aria-modal="true" aria-label="Выпал предмет">
     <div class="result-card">
-      <div class="result-badge">${resultCheckIcon()}</div>
-      <h2>ВЫПАЛ ПРЕДМЕТ</h2>
-      <p>${esc(item.name)} добавлен в инвентарь сайта</p>
+      <button class="cx-reveal-x" onclick="closeCaseReveal(true)" aria-label="Закрыть">×</button>
+      <h2>ВАШ ВЫИГРЫШ</h2>
       ${resultItemBlock(item)}
       ${resultParticles()}
-      <button class="result-close" onclick="closeCaseReveal()">В ИНВЕНТАРЬ</button>
+      <div class="cx-reveal-actions">
+        <button class="cx-reveal-sell" onclick="sellCaseResult()">ПРОДАТЬ ЗА ${money(item.priceCents)}</button>
+        <button class="cx-reveal-upgrade" onclick="upgradeCaseResult()">В АПГРЕЙД</button>
+        <button class="cx-reveal-keep" onclick="closeCaseReveal(true)">ОСТАВИТЬ СЕБЕ</button>
+      </div>
     </div>
   </div>`;
 }
-function closeCaseReveal() {
+async function sellCaseResult() {
+  const item = S.caseResult;
+  if (!item) return;
   S.caseReveal = false;
   S.caseResult = null;
-  if (S.page === 'case') { S.page = 'inventory'; }
+  render();
+  try {
+    const result = await api(`/api/inventory/${encodeURIComponent(item.assetid)}/sell`, { method: 'POST' });
+    if (typeof result.balanceCents === 'number' && S.me?.user) S.me.user.balanceCents = result.balanceCents;
+    try { await refreshAccount(); } catch (_) {}
+    render();
+    toast(`Продано за ${money(result.amountCents)}`, 'success');
+  } catch (error) { toast(error.message, 'error'); }
+}
+function upgradeCaseResult() {
+  const item = S.caseResult;
+  S.caseReveal = false;
+  S.caseResult = null;
+  if (item && item.assetid) {
+    refreshAccount().catch(() => {}).then(() => { sendToUpgrade(String(item.assetid)); });
+    S.page = 'upgrade';
+  }
+  render();
+}
+function closeCaseReveal(stay = false) {
+  S.caseReveal = false;
+  S.caseResult = null;
+  if (!stay && S.page === 'case') { S.page = 'inventory'; }
   render();
 }
 function resultParticles() {
@@ -2078,7 +2162,7 @@ Object.assign(window, {
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat, setTicketCategory,
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
-  closeUpgradeResult, closeCaseReveal, openInventory, openPublicProfile, acceptCookies, rejectCookies, toggleSidebar
+  closeUpgradeResult, closeCaseReveal, sellCaseResult, upgradeCaseResult, openInventory, openPublicProfile, acceptCookies, rejectCookies, toggleSidebar
 });
 function notificationSeenIds() {
   try {

@@ -1,0 +1,468 @@
+/* CaseX Figma Upgrade redesign — appended after the generated site styles. */
+:root {
+  --cx-bg: #0b0a10;
+  --cx-panel: rgba(16, 21, 34, .72);
+  --cx-panel-top: rgba(65, 84, 136, .20);
+  --cx-blue: #6682ff;
+  --cx-blue-2: #1a64fc;
+  --cx-muted: #414b63;
+  --cx-text: #f5f7ff;
+  --cx-border: rgba(102,130,255,.18);
+}
+
+html, body {
+  background: var(--cx-bg) !important;
+  color: var(--cx-text);
+  overflow-x: hidden;
+}
+
+body {
+  min-width: 980px;
+  font-family: 'Gotham', 'Barlow', Arial, sans-serif;
+}
+
+/* Remove the live-drop/player feed completely. */
+body .sidebar { display: none !important; }
+body .cx-side-toggle { display: none !important; }
+
+.layout {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.main {
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 24px 32px !important;
+  min-width: 0 !important;
+}
+
+/* Header reconstructed around the Figma proportions. */
+.top {
+  height: 69px !important;
+  margin: 24px 0 0 !important;
+  padding: 0 0 0 3px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 0 !important;
+  position: relative !important;
+  z-index: 30;
+}
+
+.top .brand {
+  width: 151px !important;
+  min-width: 151px !important;
+  height: 35px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.top .brand img {
+  width: 151px !important;
+  height: 35px !important;
+  object-fit: contain !important;
+}
+
+.top .brand span { display: none !important; }
+.top .nav { display: none !important; }
+.top .telegram,
+.top .admin-link,
+.top #notification-trigger { display: none !important; }
+
+.top .actions {
+  margin-left: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+.top .header-balance {
+  height: 69px !important;
+  width: 147px !important;
+  min-width: 147px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(102,130,255,.12) !important;
+  background: linear-gradient(235deg, rgba(65,84,136,.20), rgba(16,21,34,.20)) !important;
+  box-shadow: none !important;
+  display: grid !important;
+  grid-template-columns: 45px 1fr 18px !important;
+  grid-template-rows: 1fr !important;
+  align-items: center !important;
+  padding: 0 9px !important;
+}
+
+.top .header-balance > span { display: none !important; }
+.top .header-balance b {
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-weight: 800 !important;
+  font-size: 13px !important;
+  color: #fff !important;
+  text-align: center !important;
+}
+.top .header-balance b img { display: none !important; }
+.top .header-balance button {
+  width: 22px !important;
+  height: 22px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: #232e44 !important;
+  color: #6682ff !important;
+  font-size: 0 !important;
+  position: relative !important;
+}
+.top .header-balance button::after {
+  content: '↕';
+  font-size: 14px;
+  font-weight: 900;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transform: rotate(90deg);
+}
+
+.top .profile-trigger {
+  width: 69px !important;
+  height: 69px !important;
+  min-width: 69px !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+.top .profile-trigger img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+
+/* Figma-like top utility cards, inserted by casex-figma-nav.js. */
+.cx-figma-topcards {
+  display: flex;
+  gap: 23px;
+  margin-left: 23px;
+}
+.cx-figma-topcard {
+  width: 224px;
+  height: 69px;
+  border-radius: 10px;
+  border: 1px solid rgba(102,130,255,.12);
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+  position: relative;
+  font-family: 'Gotham', Arial, sans-serif;
+  font-weight: 900;
+  font-size: 15px;
+  text-align: left;
+  padding: 0 22px;
+  text-shadow: 0 0 4px rgba(255,255,255,.55);
+}
+.cx-figma-topcard.giveaway { background: linear-gradient(216deg, rgba(0,68,255,.28), rgba(0,37,139,.18)); }
+.cx-figma-topcard.inventory { width: 209px; background: linear-gradient(218deg, rgba(255,89,0,.55), rgba(188,149,109,.34)); }
+.cx-figma-topcard::after {
+  content: '';
+  position: absolute;
+  width: 74px;
+  height: 74px;
+  right: -4px;
+  bottom: -8px;
+  border-radius: 18px;
+  background: rgba(255,255,255,.08);
+  transform: rotate(16deg);
+}
+
+/* Desktop canvas / page title. */
+.page[data-page="upgrade"] {
+  width: 1308px !important;
+  max-width: calc(100vw - 170px) !important;
+  margin: 0 auto !important;
+  padding: 25px 0 0 !important;
+  min-height: 990px;
+  position: relative;
+}
+.page[data-page="upgrade"]::before {
+  content: 'Прокачай свой инвентарь';
+  display: block;
+  height: 53px;
+  margin: 0 0 56px;
+  font-family: 'Gotham', Arial, sans-serif;
+  font-size: 27px;
+  line-height: 53px;
+  font-weight: 800;
+  text-align: center;
+  background: linear-gradient(99deg, #6181ff 30%, #1075e0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.upgrid {
+  width: 1308px !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  display: grid !important;
+  grid-template-columns: 439px 330px 439px !important;
+  column-gap: 50px !important;
+  align-items: start !important;
+}
+
+.source-col, .target-col { width: 439px !important; }
+.wheelbox { width: 330px !important; margin-top: -56px !important; }
+
+/* Main source/target cards. */
+.upgrid .panel {
+  width: 439px !important;
+  height: 337px !important;
+  border-radius: 5px !important;
+  border: 1px solid rgba(102,130,255,.12) !important;
+  background: linear-gradient(198deg, rgba(65,84,136,.20), rgba(16,21,34,.20)) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+.upgrid .panel .title {
+  height: 39px !important;
+  min-height: 39px !important;
+  padding: 0 8px !important;
+  display: flex !important;
+  align-items: center !important;
+  background: rgba(45,51,74,.20) !important;
+  border-bottom: 1px solid rgba(102,130,255,.08) !important;
+  color: #b0b0b0 !important;
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+}
+.upgrid .panel .title b { color: #b0b0b0 !important; font-weight: 700 !important; }
+
+.selected-big {
+  height: 275px !important;
+  margin: 0 !important;
+  padding: 12px 19px 8px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  grid-template-rows: 192px auto auto !important;
+  align-content: start !important;
+}
+.selected-big .art,
+.selected-big .art img {
+  width: 271px !important;
+  height: 192px !important;
+  margin: 0 auto !important;
+  border-radius: 6px !important;
+}
+.selected-big .art { background: #3f3f3f !important; overflow: hidden !important; }
+.selected-big .art img { object-fit: cover !important; }
+.selected-big .item-name,
+.selected-big .skin-name,
+.selected-big .name,
+.selected-big .weapon {
+  font-family: 'Gotham', Arial, sans-serif !important;
+  color: #fff !important;
+  font-weight: 900 !important;
+}
+.selected-big .item-name { font-size: 25px !important; margin-top: 20px !important; }
+.selected-big .skin-name,
+.selected-big .skin { color: #d7d7d7 !important; font-size: 15px !important; font-weight: 700 !important; }
+.selected-big .price,
+.selected-big .skin-price { justify-self: end !important; color: #fff !important; font-size: 20px !important; font-weight: 900 !important; }
+
+.selected-big.empty {
+  display: grid !important;
+  place-items: center !important;
+  color: #414b63 !important;
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-size: 12px !important;
+}
+
+/* Center wheel. */
+.wheelhead { display: none !important; }
+.wheel-stage { width: 330px !important; height: 324px !important; position: relative !important; }
+.wheel { width: 276px !important; height: 276px !important; margin: 0 auto !important; top: 17px !important; position: relative !important; }
+.spinner-ring, .spinner-center, .spinner-logo { position: absolute !important; }
+.wheelcenter { z-index: 5 !important; }
+.wheelcenter strong {
+  color: #6682ff !important;
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-size: 45px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+}
+.wheelcenter span {
+  color: #414b63 !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+}
+.pointer-orbit { top: 0 !important; left: 0 !important; width: 330px !important; height: 330px !important; }
+.pointer { width: 29px !important; height: 34px !important; }
+
+.wheelbox .upgrade {
+  width: 330px !important;
+  height: 69px !important;
+  margin: 0 !important;
+  border: 3px solid #6682ff !important;
+  border-radius: 5px !important;
+  background: linear-gradient(104deg, #123f7c, #6682ff) !important;
+  box-shadow: 0 0 12px rgba(26,100,252,.28) !important;
+  color: #fff !important;
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-size: 22px !important;
+  font-weight: 900 !important;
+}
+.wheelbox .upgrade:disabled { opacity: .75 !important; }
+.wheelbox .upgrade-icon { display: none !important; }
+.wheelbox .under {
+  text-align: center !important;
+  color: #414b63 !important;
+  font-size: 11px !important;
+  margin-top: 8px !important;
+}
+
+/* Remove the small control row from the Figma composition. */
+.source-col .panel-tools { display: none !important; }
+.add-balance-bar, .boost-row { display: none !important; }
+
+/* Bottom inventory/target panels. */
+.upgrade-lists {
+  width: 1308px !important;
+  max-width: 100% !important;
+  margin: 15px 0 0 !important;
+  display: grid !important;
+  grid-template-columns: 648px 648px !important;
+  gap: 14px !important;
+}
+.upgrade-list-panel {
+  width: 648px !important;
+  min-height: 499px !important;
+  border-radius: 5px !important;
+  border: 1px solid rgba(102,130,255,.12) !important;
+  background: linear-gradient(198deg, rgba(65,84,136,.20), rgba(16,21,34,.20)) !important;
+  overflow: hidden !important;
+}
+.upgrade-list-head {
+  height: 55px !important;
+  background: rgba(45,51,74,.20) !important;
+  border-bottom: 1px solid rgba(102,130,255,.08) !important;
+  padding: 0 8px !important;
+}
+.upgrade-list-head > div:first-child { height: 55px !important; display: flex !important; align-items: center !important; gap: 10px !important; }
+.upgrade-list-head img { width: 27px !important; height: 27px !important; object-fit: contain !important; }
+.upgrade-list-head b {
+  color: #b0b0b0 !important;
+  font-family: 'Gotham', Arial, sans-serif !important;
+  font-size: 20px !important;
+  font-weight: 800 !important;
+}
+.target-filters { gap: 5px !important; }
+.target-filters input { height: 32px !important; border-radius: 5px !important; background: rgba(11,10,16,.42) !important; border: 1px solid rgba(102,130,255,.14) !important; color: #fff !important; }
+.target-filters button { height: 32px !important; border-radius: 5px !important; background: #232e44 !important; color: #6682ff !important; }
+.upgrade-list-body { padding: 18px 8px !important; min-height: 444px !important; overflow: hidden !important; }
+.upgrade-items-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, 200px) !important;
+  grid-auto-rows: 150px !important;
+  gap: 14px 15px !important;
+  align-content: start !important;
+}
+.skin-card {
+  width: 200px !important;
+  height: 150px !important;
+  border-radius: 6px !important;
+  background: rgba(24,27,38,.72) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  position: relative !important;
+  overflow: hidden !important;
+  text-align: left !important;
+}
+.skin-card .art {
+  width: 200px !important;
+  height: 112px !important;
+  border-radius: 6px 6px 0 0 !important;
+  background: #3f3f3f !important;
+  overflow: hidden !important;
+}
+.skin-card .art img { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+.skin-card .skin-price { position: absolute !important; top: 4px !important; right: 7px !important; z-index: 3 !important; font-size: 9px !important; font-weight: 900 !important; color: #fff !important; }
+.skin-card .item-name, .skin-card .skin-name, .skin-card .weapon { font-family: 'Gotham', Arial, sans-serif !important; font-size: 15px !important; font-weight: 900 !important; color: #fff !important; }
+.skin-card .item-skin, .skin-card .skin { font-family: 'Gotham', Arial, sans-serif !important; font-size: 10px !important; font-weight: 700 !important; color: #d7d7d7 !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+.skin-card .skin-rarity-line { height: 6px !important; bottom: 0 !important; left: 0 !important; right: 0 !important; position: absolute !important; background: #4b69ff !important; }
+.target-pager { display: none !important; }
+
+/* Keep the existing upgrade interactions usable. */
+.upgrade-list-panel button.skin-card { cursor: pointer !important; }
+.upgrade-list-panel button.skin-card:hover { transform: translateY(-1px); filter: brightness(1.08); }
+
+/* Hide legacy footer/support on the upgrade canvas; support button remains accessible. */
+.page[data-page="upgrade"] ~ .site-footer { display: none !important; }
+
+/* Left navigation. */
+.cx-figma-sidebar {
+  position: fixed;
+  z-index: 50;
+  left: 24px;
+  top: 218px;
+  width: 116px;
+  height: 635px;
+  border-radius: 10px;
+  border: 1px solid rgba(102,130,255,.10);
+  background: linear-gradient(193deg, rgba(65,84,136,.20), rgba(16,21,34,.20));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 74px 8px 18px;
+  gap: 30px;
+  box-sizing: border-box;
+}
+.cx-figma-nav-item {
+  height: 91px;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  padding: 0;
+  font-family: 'Gotham', Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+  text-shadow: 0 0 3px rgba(255,255,255,.25);
+}
+.cx-figma-nav-item img {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  display: block;
+}
+.cx-figma-nav-item.active {
+  background: linear-gradient(104deg, #6682ff, #1a64fc);
+  box-shadow: 0 0 10px rgba(26,100,252,.55);
+}
+.cx-figma-nav-item:hover:not(.active) { background: rgba(102,130,255,.10); }
+
+/* The Figma layout is desktop-first; gracefully collapse the side rail at smaller widths. */
+@media (max-width: 1250px) {
+  body { min-width: 900px; }
+  .cx-figma-sidebar { left: 12px; transform: scale(.82); transform-origin: top left; }
+  .page[data-page="upgrade"] { transform: scale(.82); transform-origin: top center; margin-bottom: -180px !important; }
+  .cx-figma-topcards { display: none; }
+}
+
+@media (max-width: 1050px) {
+  .cx-figma-sidebar { display: none; }
+  .page[data-page="upgrade"] { transform: none; width: 100% !important; max-width: none !important; }
+  .upgrid, .upgrade-lists { margin-left: auto !important; margin-right: auto !important; }
+}

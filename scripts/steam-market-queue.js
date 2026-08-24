@@ -172,7 +172,7 @@ function getCached(url) {
 function enqueue(url, init, foreground = false, resolve = null, reject = null) {
   if (foreground) {
     queuedUrls.add(url);
-    queue.push({ url, init, foreground, resolve, reject, attempts: 0 });
+    queue.unshift({ url, init, foreground, resolve, reject, attempts: 0 });
     runQueue().catch(e => console.error('[steam-price-queue]', e));
     return;
   }
@@ -325,7 +325,8 @@ async function runWorker() {
       task.attempts = (task.attempts || 0) + 1;
       const maxAttempts = proxyObj ? Math.min(6, Math.max(2, proxyPool.length)) : 1;
       if (task.attempts < maxAttempts) {
-        queuedUrls.add(task.url); queue.push(task);
+        queuedUrls.add(task.url);
+        if (task.foreground) queue.unshift(task); else queue.push(task);
       } else if (task.foreground && task.reject) task.reject(error);
       if (proxyObj) proxyObj.busy = false;
       continue;
@@ -342,7 +343,8 @@ async function runWorker() {
       task.attempts = (task.attempts || 0) + 1;
       const maxAttempts = proxyObj ? Math.min(6, Math.max(2, proxyPool.length)) : 1;
       if (task.attempts < maxAttempts) {
-        queuedUrls.add(task.url); queue.push(task);
+        queuedUrls.add(task.url);
+        if (task.foreground) queue.unshift(task); else queue.push(task);
       } else if (task.foreground && task.resolve) task.resolve(response);
       if (proxyObj) proxyObj.busy = false;
       continue;
@@ -356,7 +358,7 @@ async function runWorker() {
         if (proxyObj.fails >= MAX_PROXY_FAILURES) { proxyPool = proxyPool.filter(item => item !== proxyObj); persistProxyPool(); }
       }
       task.attempts = (task.attempts || 0) + 1;
-      if (proxyObj && task.attempts < 4) { queuedUrls.add(task.url); queue.push(task); }
+      if (proxyObj && task.attempts < 4) { queuedUrls.add(task.url); if (task.foreground) queue.unshift(task); else queue.push(task); }
       else if (task.foreground && task.resolve) task.resolve(response);
       if (proxyObj) proxyObj.busy = false;
       continue;
