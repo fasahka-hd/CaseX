@@ -14,7 +14,7 @@
     "infra:down": "node scripts/infra.js down",
     "infra:status": "node scripts/infra.js status",
     "test": "node --test tests/*.test.js",
-    "check": "node --check server.js && node --check lib/idempotency.js && node --check routes/7vljdnqqbrjyhj330sxtjo.js && node --check static/js/core.js && node --check static/js/dialog.js && node --check static/js/app.js && node --check static/js/admin.js"
+    "check": "node --check server.js && node --check lib/idempotency.js && node --check routes/7vljdnqqbrjyhj330sxtjo.js && node --check static/js/di6cf27ucoxg3ozqkjyq.js && node --check static/js/s7f9jtald20n7w0piypu.js && node --check static/js/fv5ht3nkhtnh71lvyj0r.js && node --check static/js/08orz4wd3xbuv4jjar8h.js"
   },
   "engines": {
     "node": ">=18"
@@ -30,5 +30,13 @@
   },
   "devDependencies": {
     "acorn": "^8.18.0"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "lib": "lib",
+    "test": "tests"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

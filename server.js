@@ -6,6 +6,13 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const db = require('./lib/db');
+const cache = require('./lib/cache');
+const { createQueue } = require('./lib/queue');
+const queue = createQueue({ cache });
+if (global.__priceQueue && global.__priceQueue.attachDb) global.__priceQueue.attachDb(db);
+console.log(`[db] ${db.describe()}`);
+setTimeout(() => console.log(`[cache] ${cache.describe()}`), 300);
 
 try {
   const localEnv = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
@@ -1134,13 +1141,7 @@ for (const filename of ['tos.html', 'privacy.html', 'cookies.html', 'aml.html'])
 app.get('/index.html', (_, res) => sendHtmlDocument(res, 'index.html'));
 app.get('/', (_, res) => sendHtmlDocument(res, 'index.html'));
 
-const db = require('./lib/db');
-const cache = require('./lib/cache');
-console.log(`[db] ${db.describe()}`);
-setTimeout(() => console.log(`[cache] ${cache.describe()}`), 300);
-const { createQueue } = require('./lib/queue');
-const queue = createQueue({ cache });
-if (global.__priceQueue && global.__priceQueue.attachDb) global.__priceQueue.attachDb(db);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
