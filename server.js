@@ -2373,6 +2373,8 @@ app.post('/api/cases/open', (req, res) => {
       const state = caseState(caseData, account.id);
       if (state.override && !state.override.enabled) throw new ApiError(422, 'CASE_DISABLED', 'Кейс временно отключён');
       if (!state.enabled) throw new ApiError(422, 'CASE_UNAVAILABLE', 'Кейс недоступен');
+      const contents = Array.isArray(caseData.contents) ? caseData.contents.filter(([id]) => CATALOG_BY_ID.has(String(id))) : [];
+      if (!contents.length) throw new ApiError(422, 'CASE_CONTENT_INVALID', 'Содержимое кейса настроено некорректно');
       if (caseData.once) {
         const once = db.prepare(`INSERT INTO case_once_claims(user_id,case_id,created_at) VALUES(?,?,?) ON CONFLICT(user_id,case_id) DO NOTHING`)
           .run(account.id, caseData.id, now);

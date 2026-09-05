@@ -86,7 +86,7 @@ function translateMarkup(markup) {
     const value = text.trim();
     return dictionary[value] ? `>${text.replace(value, dictionary[value])}<` : match;
   });
-  output = output.replace(/(placeholder|title|aria-label)=(['"])(.*?)/g, (match, attribute, quote, value) => {
+  output = output.replace(/(placeholder|title|aria-label)=(['"])(.*?)\2/g, (match, attribute, quote, value) => {
     return `${attribute}=${quote}${dictionary[value] || value}${quote}`;
   });
   return output;
@@ -95,7 +95,7 @@ function translateDom() {
   document.documentElement.lang = ({ RU: 'ru', EN: 'en', UA: 'uk', BE: 'be', KZ: 'kk' })[S.footerLang] || 'ru';
 }
 function localizeMarkup(markup) {
-  return String(markup).replace(/(src|href|poster)=(['"])\/(?!\/)([^'"]*)/g, (match, attribute, quote, value) => `${attribute}=${quote}${window.CaseXCore.appUrl(value)}${quote}`);
+  return String(markup).replace(/\b(src|href|poster)=(['"])\/(?!\/)([^'"]*)\2/g, (match, attribute, quote, value) => `${attribute}=${quote}${window.CaseXCore.appUrl(value)}${quote}`);
 }
 function flagIcon(code) {
   const cc = FLAG_CODES[code] || 'ru';
@@ -362,19 +362,10 @@ function steamIcon() {
 function telegramIcon() {
   return `<img class="chunk-icon telegram-icon" src="/chunks/telegramIcon.svg" alt="Telegram">`;
 }
-function onlineIcon() {
-  const phase = -(Date.now() % 1600);
-  return `<svg class="live-drop-online-icon" style="--online-phase:${phase}ms" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path class="live-drop-online-icon__stem" d="M13.998 9.9209C15.3785 9.92116 16.498 11.0403 16.498 12.4209C16.4979 13.4448 15.8813 14.3235 15 14.71V26H13V14.7119C12.1162 14.3266 11.4981 13.4466 11.498 12.4209C11.498 11.0402 12.6173 9.9209 13.998 9.9209Z" fill="#83D8FF"/>
-    <path class="live-drop-online-icon__arc live-drop-online-icon__arc--primary" d="M9.74278 16.728C8.90367 15.8889 8.33222 14.8198 8.10071 13.6559C7.8692 12.492 7.98802 11.2856 8.44215 10.1893C8.89627 9.09289 9.66531 8.15582 10.652 7.49653C11.6387 6.83725 12.7987 6.48535 13.9854 6.48535C15.1721 6.48535 16.3321 6.83725 17.3188 7.49653C18.3055 8.15582 19.0746 9.09289 19.5287 10.1893C19.9828 11.2856 20.1016 12.492 19.8701 13.6559C19.6386 14.8198 19.0672 15.8889 18.2281 16.728" stroke="#83D8FF" stroke-width="1.5" stroke-linecap="round"/>
-    <path class="live-drop-online-icon__arc live-drop-online-icon__arc--secondary" d="M7.21757 19.1531C5.88897 17.8245 4.98419 16.1317 4.61763 14.2889C4.25107 12.4461 4.4392 10.536 5.15823 8.80005C5.87727 7.06416 7.0949 5.58046 8.65717 4.53659C10.2194 3.49271 12.0562 2.93555 13.9351 2.93555C15.814 2.93555 17.6507 3.49271 19.213 4.53659C20.7753 5.58046 21.9929 7.06416 22.7119 8.80005C23.431 10.536 23.6191 12.4461 23.2525 14.2889C22.886 16.1317 21.9812 17.8245 20.6526 19.1531" stroke="#83D8FF" stroke-width="1.5" stroke-linecap="round"/>
-  </svg>`;
-}
-
 function header() {
   const balance = S.me?.authenticated ? coinPrice(S.me.user.balanceCents) : null;
   return `<header class="top">
-    <div class="brand"><img src="/chunks/logo.svg" alt=""><span>${esc(S.brand)}</span></div>
+    <div class="brand cx-brand"><span class="cx-word">Case</span><img class="cx-logo-x" src="/chunks/logo-x.png" alt="X" draggable="false"></div>
     <nav class="nav">
       <button class="${S.page === 'cases' || S.page === 'case' ? 'active' : ''}" onclick="go('cases')">КЕЙСЫ</button>
       <button class="${S.page === 'upgrade' ? 'active' : ''}" onclick="go('upgrade')">АПГРЕЙДЫ</button>
@@ -394,40 +385,8 @@ function header() {
   </header>`;
 }
 
-function sideItem(item) {
-  const player = item.userId ? { id:item.userId, name:item.userName, avatar:item.userAvatar } : S.me?.user;
-  const avatar = player?.avatar ? `<img src="${esc(player.avatar)}" data-fb="/chunks/logo.svg" alt="" referrerpolicy="no-referrer">` : '<img src="/chunks/logo.svg" alt="">';
-  const fullName=String(item.name||item.itemName||'');const [weapon,skin='']=fullName.split(' | ');
-  const normalized={...item,name:fullName,weapon:item.weapon||weapon,skin:item.skin||skin,icon:item.icon||item.itemIcon,priceCents:item.priceCents,rarityColor:item.rarityColor||'#83d8ff'};
-  const clickable=Number(player?.id)>0;
-  return `<div class="side-item skin-item${clickable?' profile-clickable':''}" ${rarityStyle(normalized)} ${clickable?`role="button" tabindex="0" onclick="openPublicProfile(${Number(player.id)})" onkeydown="if(event.key==='Enter')openPublicProfile(${Number(player.id)})" title="Открыть профиль ${esc(player.name||'игрока')}"`:''}>
-    ${art(normalized)}<div class="side-item-copy"><div class="item-name-row"><span class="item-name">${esc(normalized.weapon||fullName)}</span></div><div class="item-skin">${esc(normalized.skin)}</div><div class="item-rarity">${esc(normalized.rarity||'')}</div></div>
-    <div class="side-player">${avatar}<span>${esc(player?.name||'Игрок')}</span></div><i class="skin-rarity-line"></i>
-  </div>`;
-}
-
 function sidebar() {
-  const feed = Array.isArray(S.drops) ? S.drops : [];
-  const filtered = S.tab === 'hot' ? feed.filter(item => Number(item.rarityRank) >= 4) : feed;
-  const items = filtered.slice(0, 30);
-  return `<aside class="sidebar">
-    <div class="side-head">
-      <div class="site-online">
-        ${onlineIcon()}<b data-online>${S.online}</b><span>ONLINE</span>
-      </div>
-      <div class="side-tabs">
-        <button class="${S.tab === 'inventory' ? 'active' : ''}" onclick="sideTab('inventory')" title="Предметы сайта">▦</button>
-        <button class="${S.tab === 'hot' ? 'active' : ''}" onclick="sideTab('hot')" title="От засекреченного">🔥</button>
-      </div>
-    </div>
-    <div class="side-list">
-      ${items.length
-        ? items.map(sideItem).join('')
-        : `<div class="side-empty">${S.me?.authenticated
-            ? (S.tab === 'hot' ? 'Нет предметов редкости «Засекреченное» или выше' : 'Откройте кейс — предмет появится здесь')
-            : 'Авторизуйтесь, чтобы увидеть инвентарь сайта'}</div>`}
-    </div>
-  </aside>`;
+  return '';
 }
 
 function priceTag(item) {
@@ -484,7 +443,7 @@ function upgradePage() {
   const minTarget = Math.max(minimumPrice, Number.isFinite(userMin) ? userMin : 0);
   const maxTarget = S.upgrade.targetMax === '' ? Infinity : Number(S.upgrade.targetMax) * 100;
   const targets = S.catalog.filter(item => item.priceCents >= minTarget && item.priceCents <= maxTarget && (!query || `${item.weapon} ${item.skin} ${item.name}`.toLowerCase().includes(query)));
-  const pageSize = 16;
+  const pageSize = 9;
   let pageCount = Math.max(1, Math.ceil(targets.length / pageSize));
   if (S.upgrade.targetPage > pageCount) S.upgrade.targetPage = pageCount;
   const pageTargets = targets.slice((S.upgrade.targetPage - 1) * pageSize, S.upgrade.targetPage * pageSize);
@@ -659,13 +618,25 @@ function playCaseDrop() {
     return;
   }
   if (caseDropFor === S.caseFlow.activeCase || !src) return;
-  caseDropFor = S.caseFlow.activeCase;
+  const ready = () => src.complete && src.naturalWidth > 0;
   const r = src.getBoundingClientRect();
-  if (r.width < 8 || r.height < 8) {
-    caseDropFor = null;
-    requestAnimationFrame(playCaseDrop);
+  if (!ready() || r.width < 8 || r.height < 8) {
+    let tries = 0;
+    const wait = () => {
+      tries += 1;
+      const live = document.querySelector('.case-detail .case-visual img');
+      const stillOnCase = S.page === 'case' && !S.caseFlow.opening && !S.caseFlow.rouletteItems.length;
+      if (live && stillOnCase && (!live.complete || live.naturalWidth === 0) && tries < 60) {
+        requestAnimationFrame(wait);
+        return;
+      }
+      playCaseDrop();
+    };
+    if (!ready()) src.addEventListener('load', () => requestAnimationFrame(playCaseDrop), { once: true });
+    requestAnimationFrame(wait);
     return;
   }
+  caseDropFor = S.caseFlow.activeCase;
   src.style.visibility = 'hidden';
   const ghost = document.createElement('img');
   ghost.id = 'cx-case-drop-fx';
@@ -1348,7 +1319,6 @@ function openInventory() {
 }
 let lastPageRendered = null;
 function render() {
-  if (S.caseFlow.dropLock && Date.now() < S.caseFlow.dropLock && S.page === 'case') return;
   const app = $('#app');
   const rawHtml = header() + `<div class="layout">${sidebar()}<main class="main">${siteBanner()}<div class="page" data-page="${esc(S.page || '')}">${pageContent()}</div></main></div>${siteFooter()}
     <div class="support"><button onclick="openChat()" aria-label="Поддержка" title="Поддержка"><img src="/chunks/pomosh.webp" alt="Поддержка"></button></div>${S.chat ? chatModal() : ''}${S.authModal ? authConsentModal() : ''}${S.settingsOpen ? settingsModal() : ''}${S.paymentOpen ? paymentModal() : ''}${resultOverlay()}${caseRevealOverlay()}${cookieConsentBanner()}${frozenAccountOverlay()}${cxSellAllBar()}`;
@@ -1366,6 +1336,8 @@ function render() {
         if (!fromEl || fromEl.nodeType !== 1 || !toEl) return;
         if (fromEl === document.activeElement && (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA' || fromEl.tagName === 'SELECT')) return false;
         if (S.upgrade.spinning && fromEl.classList && fromEl.classList.contains('pointer-orbit')) return false;
+        if (S.caseFlow.rouletteItems.length && fromEl.classList && (fromEl.classList.contains('case-roll-track') || fromEl.classList.contains('case-roulette'))) return false;
+        if (S.caseFlow.dropLock && Date.now() < S.caseFlow.dropLock && fromEl.classList && fromEl.classList.contains('case-visual')) return false;
       }
     });
   } else {
@@ -1383,44 +1355,9 @@ function render() {
   window.CaseXCore.enhanceImages(app);
   window.CaseXCore.syncDialog(app);
   syncCaseBackdrop();
-  syncSidebarToggle();
   playCaseDrop();
   syncAddBalanceRange();
   if (S.chat) loadChat();
-}
-
-const SIDEBAR_KEY = 'keyser-sidebar-collapsed';
-
-function sidebarChevron() {
-  return '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5 8 12l7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-}
-
-function setSidebarCollapsed(collapsed) {
-  document.body.classList.toggle('cx-side-collapsed', collapsed);
-  try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (error) {  }
-  const button = document.getElementById('cx-side-toggle');
-  if (button) {
-    button.setAttribute('aria-expanded', String(!collapsed));
-    button.setAttribute('aria-label', collapsed ? 'Показать панель дропов' : 'Скрыть панель дропов');
-    button.title = collapsed ? 'Показать панель' : 'Скрыть панель';
-  }
-}
-
-function toggleSidebar() {
-  setSidebarCollapsed(!document.body.classList.contains('cx-side-collapsed'));
-}
-
-function syncSidebarToggle() {
-  if (document.getElementById('cx-side-toggle')) return;
-  const button = document.createElement('button');
-  button.id = 'cx-side-toggle';
-  button.type = 'button';
-  button.innerHTML = sidebarChevron();
-  button.addEventListener('click', toggleSidebar);
-  document.body.appendChild(button);
-  let collapsed = false;
-  try { collapsed = localStorage.getItem(SIDEBAR_KEY) === '1'; } catch (error) {  }
-  setSidebarCollapsed(collapsed);
 }
 
 function syncCaseBackdrop() {
@@ -1639,10 +1576,11 @@ function selectCase(caseId) {
   loadCaseDetail(caseId);
 }
 function buildRoulette(caseData, winner) {
-  const pool = caseData.contents;
-  const items = Array.from({ length: 48 }, () => pool[Math.floor(Math.random() * pool.length)]);
-  items[41] = winner;
-  return items;
+  const pool = Array.isArray(caseData?.contents) ? caseData.contents.filter(Boolean) : [];
+  const pick = () => pool.length ? pool[Math.floor(Math.random() * pool.length)] : winner;
+  const items = Array.from({ length: 48 }, pick);
+  if (winner) items[41] = winner;
+  return items.filter(Boolean);
 }
 async function openCase(caseId) {
   if (S.caseFlow.opening || S.caseFlow.loading) return;
@@ -1682,11 +1620,12 @@ async function openCase(caseId) {
           const cardWidth = cards.length ? cards[0].offsetWidth : 168;
           const stop = 41 * pitch - viewport.clientWidth / 2 + cardWidth / 2;
           if (S.turbo) track.style.setProperty('transition', 'transform 1.1s cubic-bezier(.1,.65,.1,1)');
-          track.style.transform = `translate3d(-${Math.max(0, stop)}px,0,0)`;
           track.classList.add('rolling');
-          setTimeout(finish, spinMs);
+          track.addEventListener('transitionend', finish, { once: true });
+          requestAnimationFrame(() => { track.style.transform = `translate3d(-${Math.max(0, stop)}px,0,0)`; });
+          setTimeout(finish, spinMs + 250);
         } else {
-          finish();
+          setTimeout(start, 60);
         }
       };
       requestAnimationFrame(() => requestAnimationFrame(start));
@@ -1909,13 +1848,15 @@ async function sellCaseResult() {
 }
 function upgradeCaseResult() {
   const item = S.caseFlow.result;
+  const assetid = item && item.assetid ? String(item.assetid) : null;
   S.caseFlow.reveal = false;
   S.caseFlow.result = null;
-  if (item && item.assetid) {
-    refreshAccount().catch(() => {}).then(() => { sendToUpgrade(String(item.assetid)); });
-    S.page = 'upgrade';
-  }
   render();
+  if (assetid) {
+    refreshAccount()
+      .catch(() => {})
+      .then(() => sendToUpgrade(assetid));
+  }
 }
 function closeCaseReveal(stay = false) {
   S.caseFlow.reveal = false;
@@ -2081,7 +2022,6 @@ function go(page) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, current ? 150 : 0);
 }
-function sideTab(tab) { S.tab = tab; render(); }
 function setProfileTab(tab) { S.profileTab = tab; render(); }
 function login() { window.CaseXCore.rememberFocus(); S.authModal = true; render(); }
 function closeAuthModal() { S.authModal = false; render(); window.CaseXCore.restoreFocus(); }
@@ -2301,13 +2241,13 @@ function toast(text, type = '') {
 }
 
 Object.assign(window, {
-  go, sideTab, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, cxAskSellAll, cxCancelSellAll, cxDoSellAll, cxClaimWeekly, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
+  go, setProfileTab, choose, setBoost, setAddBalance, applyTargetFilters, setTargetPage, sendToUpgrade, sellItem, toggleSellMode, toggleSellItem, sellSelectAll, sellSelectedItems, cxAskSellAll, cxCancelSellAll, cxDoSellAll, cxClaimWeekly, toggleProfileSort, setProfileSort, selectCase, openCase, upgrade,
   login, closeAuthModal, toggleConsent, confirmSteamLogin, logout,
   openSettings, closeSettings, selectPrivacy, toggleStreamerMode, copyTradeLink, saveSettings,
   openPayment, closePayment, setPaymentTab, selectPaymentMethod, setPaymentAmount, applyPaymentPromo, submitPayment,
   openChat, submitSupportEmail, closeChat, sendChat, setTicketCategory,
   toggleTurbo, toggleSoundBtn, toggleCurrencyMenu, setPaymentCurrency, toggleFooterLang, setFooterLang,
-  closeUpgradeResult, closeCaseReveal, sellCaseResult, upgradeCaseResult, openInventory, openPublicProfile, acceptCookies, rejectCookies, toggleSidebar
+  closeUpgradeResult, closeCaseReveal, sellCaseResult, upgradeCaseResult, openInventory, openPublicProfile, acceptCookies, rejectCookies
 });
 function notificationSeenIds() {
   try {
